@@ -63,6 +63,12 @@ func (a *App) images(w http.ResponseWriter, r *http.Request, id, imgType string)
         }
         var it models.Item
         if err := a.db.First(&it, "id = ?", id).Error; err != nil {
+                // 条目不存在：回退媒体库封面（libDTO 的 ImageTags.Primary=libID，首页库卡片走此路径）
+                var lib models.Library
+                if err2 := a.db.First(&lib, "id = ?", id).Error; err2 == nil {
+                        a.serveLibraryImage(w, r, &lib, imgType)
+                        return
+                }
                 a.fail(w, 404, "条目不存在")
                 return
         }
@@ -260,6 +266,60 @@ func scaleImage(data []byte, maxW, maxH int) ([]byte, bool) {
                 _ = png.Encode(&buf, dst)
         }
         return buf.Bytes(), true
+}
+
+// serveLibraryImage 媒体库封面输出：手动封面 → 库内首个有条目海报 → 占位图。
+func (a *App) serveLibraryImage(w http.ResponseWriter, r *http.Request, lib *models.Library, imgType string) {
+        kind := ""
+        if imgType != "" {
+                kind = normalizeImageType(imgType)
+        }
+        // 图片列表请求
+        if imgType == "" {
+                if p := a.libCoverPath(lib); p != "" {
+                        a.json(w, 200, []M{{"ImageType": "Primary", "ImageIndex": 0, "ImageTag": imgSign("lib:"+lib.ID, "primary", p)}})
+                } else {
+                        a.json(w, 200, []M{})
+                }
+                return
+        }
+        if kind == "" {
+                a.fail(w, 404, "未知图片类型")
+                return
+        }
+        if kind != "primary" && kind != "thumb" && kind != "backdrop" && kind != "banner" {
+                a.fail(w, 404, "图片不存在")
+                return
+        }
+        p := a.libCoverPath(lib)
+        if p == "" {
+                a.servePlaceholder(w, r)
+                return
+        }
+        a.serveImageFile(w, r, p, imgSign("lib:"+lib.ID, kind, p))
+}
+
+// libCoverPath 解析媒体库封面路径：手动封面优先，其次库内任意条目海报。
+func (a *App) libCoverPath(lib *models.Library) string {
+        if lib.Poster != "" {
+                if fileExists(lib.Poster) {
+                        return lib.Poster
+                }
+        }
+        // 库内电影/剧集的直接海报
+        var child models.Item
+        if a.db.Where("library_id = ? AND type = 'Movie' AND poster <> ''", lib.ID).Order("sort_name").First(&child).Error == nil {
+                return child.Poster
+        }
+        if a.db.Where("library_id = ? AND type = 'Series' AND poster <> ''", lib.ID).Order("sort_name").First(&child).Error == nil {
+                return child.Poster
+        }
+        // 剧集回退：季海报
+        var season models.Item
+        if a.db.Where("library_id = ? AND type = 'Season' AND poster <> ''", lib.ID).Order("parent_index_number").First(&season).Error == nil {
+                return season.Poster
+        }
+        return ""
 }
 
 // servePlaceholder 程序生成占位海报。

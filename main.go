@@ -87,6 +87,12 @@ func main() {
                                 }
                         }
                 }
+                // 浏览器文档导航（刷新/直达 SPA 路由，如 /library/{id}）回退静态页：
+                // fetch/XHR 不会带 text/html Accept，API 调用不受影响；
+                // 否则 SPA 路由与 API 前缀同名（library）时，刷新会被鉴权中间件拦成 401「请先登录」
+                if isAPI && r.Method == http.MethodGet && strings.Contains(r.Header.Get("Accept"), "text/html") {
+                        isAPI = false
+                }
                 if isAPI {
                         apiHandler.ServeHTTP(w, r)
                         return

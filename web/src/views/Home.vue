@@ -39,7 +39,8 @@
       <div class="grid">
         <div v-for="v in views" :key="v.Id" class="poster-card" @click="router.push('/library/' + v.Id)">
           <div class="poster" style="aspect-ratio: 16/9;">
-            <div class="placeholder" style="font-size: 22px;">{{ v.Name }}</div>
+            <img v-if="viewImgOk(v)" :src="imageUrl(v.Id, 'Primary', 400)" @error="viewFail(v)" loading="lazy" />
+            <div v-else class="placeholder" style="font-size: 22px;">{{ v.Name }}</div>
           </div>
           <div class="title">{{ v.Name }}</div>
           <div class="meta">{{ viewKind(v) }}</div>
@@ -60,10 +61,13 @@ const views = ref([])
 const resumeItems = ref([])
 const latestItems = ref([])
 const broken = ref(new Set())
+const viewBroken = ref(new Set())
 
 function posterUrl(it, w) { return imageUrl(it.Id, it.ImageTags?.Primary ? 'Primary' : 'Primary', w) }
 function imgOk(it) { return !broken.value.has(it.Id) }
 function fail(it) { broken.value.add(it.Id) }
+function viewImgOk(v) { return !viewBroken.value.has(v.Id) }
+function viewFail(v) { viewBroken.value.add(v.Id) }
 function initial(it) { return (it.Name || '?')[0] }
 function progressPct(it) {
   const rt = it.RunTimeTicks || 0
