@@ -42,8 +42,8 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { useRoute } from 'vue-router'
-import { api, imageUrl } from '../api/client'
+import { useRoute, useRouter } from 'vue-router'
+import { api, imageUrl, state } from '../api/client'
 
 const route = useRoute()
 const router = useRouter()
@@ -126,6 +126,4 @@ onMounted(async () => {
   } catch {}
   load()
 })
-
-import { state } from '../api/client'
 </script>

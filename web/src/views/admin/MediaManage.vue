@@ -63,7 +63,10 @@
         <label>名称</label>
         <input v-model="newLib.Name" placeholder="例如：电影" style="width:100%;" />
         <label>路径（多个目录用分号分隔）</label>
-        <input v-model="newLib.Path" placeholder="/media/movies" style="width:100%;" />
+        <div style="display:flex;gap:8px;">
+          <input v-model="newLib.Path" placeholder="/media/movies；/media/movies2" style="flex:1;" />
+          <button class="btn ghost sm" type="button" @click="openPicker('dir', '选择媒体库目录', 'newlib', newLib.Path)">浏览…</button>
+        </div>
         <label>类型</label>
         <select v-model="newLib.Type" style="width:200px;">
           <option value="movies">电影</option>
@@ -78,6 +81,9 @@
         </div>
       </div>
     </div>
+
+    <PathPicker :show="picker.show" :mode="picker.mode" :title="picker.title" :initial="picker.initial"
+      @close="picker.show = false" @select="onPick" />
   </div>
 </template>
 
@@ -85,6 +91,7 @@
 import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue'
 import { api } from '../../api/client'
 import { toast, errText } from './util'
+import PathPicker from './PathPicker.vue'
 
 const libs = ref([])
 const cfg = ref({})
@@ -94,6 +101,34 @@ const openMenu = ref('')
 const busy = ref(false)
 const progress = ref(0)
 let timer = null
+
+// 路径选择器
+const picker = ref({ show: false, mode: 'dir', title: '', target: '', initial: '' })
+const pendingFolder = ref(null)
+const pendingCover = ref(null)
+function openPicker(mode, title, target, initial = '') {
+  picker.value = { show: true, mode, title, target, initial }
+}
+function onPick(path) {
+  const t = picker.value.target
+  if (t === 'newlib') newLib.value.Path = path
+  else if (t === 'folder') applyFolder(path)
+  else if (t === 'cover') applyCover(path)
+}
+async function applyFolder(path) {
+  try {
+    await api.admin.patchLibrary(pendingFolder.value.ID, { AddFolder: path })
+    toast('文件夹已添加，建议执行一次扫描')
+    load()
+  } catch (e) { toast(errText(e), true) }
+}
+async function applyCover(path) {
+  try {
+    await api.post(`/admin/libraries/${pendingCover.value.ID}/cover`, { Path: path })
+    toast('封面已插入')
+    load()
+  } catch (e) { toast(errText(e), true) }
+}
 
 const ic = {
   scan: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/></svg>',
@@ -148,23 +183,13 @@ async function stopAll() {
 }
 async function addFolder(lib) {
   openMenu.value = ''
-  const p = prompt(`为「${lib.Name}」添加媒体文件夹路径`)
-  if (!p) return
-  try {
-    await api.admin.patchLibrary(lib.ID, { AddFolder: p })
-    toast('文件夹已添加，建议执行一次扫描')
-    load()
-  } catch (e) { toast(errText(e), true) }
+  pendingFolder.value = lib
+  openPicker('dir', `为「${lib.Name}」添加媒体文件夹`, 'folder')
 }
 async function insertCover(lib) {
   openMenu.value = ''
-  const p = prompt('输入封面图片的完整路径（jpg/png）')
-  if (!p) return
-  try {
-    await api.post(`/admin/libraries/${lib.ID}/cover`, { Path: p })
-    toast('封面已插入')
-    load()
-  } catch (e) { toast(errText(e), true) }
+  pendingCover.value = lib
+  openPicker('file', '选择封面图片（jpg/png）', 'cover')
 }
 async function genCover(lib) {
   openMenu.value = ''

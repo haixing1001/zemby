@@ -78,7 +78,7 @@ import { api } from '../../api/client'
 
 const route = useRoute()
 const sideOpen = ref(false)
-const auxOpen = ref(true)
+const auxOpen = ref(false)
 const version = ref('zemby')
 
 const AUX_PATHS = ['/admin/settings', '/admin/subtitles', '/admin/tmdb', '/admin/ai']
