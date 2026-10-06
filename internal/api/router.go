@@ -28,6 +28,11 @@ type App struct {
 
 // New 创建 App。
 func New(cfg *config.Config, database *gorm.DB, sc *scanner.Scanner) *App {
+        // 恢复后台保存的设置
+        var sv models.Setting
+        if database.First(&sv, "key = ?", "server_name").Error == nil && sv.Value != "" {
+                cfg.ServerName = sv.Value
+        }
         return &App{cfg: cfg, db: database, scanner: sc, serverID: serverIdentifier(cfg), version: "4.8.0.80"}
 }
 
@@ -57,6 +62,12 @@ func (a *App) isPublic(r *http.Request) bool {
         }
         // 图片：无 tag 也放行到 handler（handler 内部再决定），此处仅放行图片路径
         if strings.Contains(p, "/images/") && (strings.HasPrefix(p, "/items/") || strings.HasPrefix(p, "/emby/items/")) {
+                return true
+        }
+        // 后台 SPA 页面导航（document 请求）放行：仅返回静态 HTML，不含数据；
+        // API 请求（fetch）不带 text/html Accept，仍需鉴权
+        if (p == "/admin" || strings.HasPrefix(p, "/admin/")) && r.Method == http.MethodGet &&
+                strings.Contains(r.Header.Get("Accept"), "text/html") {
                 return true
         }
         return false
@@ -244,6 +255,10 @@ func (a *App) serveAuthed(w http.ResponseWriter, r *http.Request, p string) {
                 a.moviesRecommendations(w, r)
 
         // 管理后台
+        case p == "/admin" || (strings.HasPrefix(p, "/admin/") && r.Method == http.MethodGet &&
+                strings.Contains(r.Header.Get("Accept"), "text/html")):
+                // 后台 SPA 页面导航（含 /admin/* 子路由），交给前端路由处理
+                a.serveWeb(w, r, r.URL.Path)
         case p == "/admin/ping" || p == "/admin/status":
                 a.adminGuard(w, r, func() { a.adminStatus(w, r) })
         case strings.HasPrefix(p, "/admin/") || strings.HasPrefix(p, "/api/"):

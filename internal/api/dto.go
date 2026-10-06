@@ -63,6 +63,7 @@ func (a *App) libDTO(lib *models.Library) M {
 		"BackdropImageTags":       []any{},
 		"UserData":                M{"Played": false, "IsFavorite": false, "PlaybackPositionTicks": 0},
 		"DisplayPreferencesId":    lib.ID,
+		"DefaultSort":             lib.DefaultSort,
 	}
 }
 

@@ -53,13 +53,68 @@ func (a *App) adminRoute(w http.ResponseWriter, r *http.Request, p string, parts
 				a.fail(w, 405, "方法不支持")
 			}
 		case len(parts) == 3 && parts[0] == "admin" && parts[1] == "libraries":
-			a.adminLibraryDelete(w, r, parts[2])
+			switch r.Method {
+			case http.MethodDelete:
+				a.adminLibraryDelete(w, r, parts[2])
+			case http.MethodPatch, http.MethodPut, http.MethodPost:
+				a.adminLibraryPatch(w, r, parts[2])
+			default:
+				a.fail(w, 405, "方法不支持")
+			}
+		case len(parts) == 5 && parts[0] == "admin" && parts[1] == "libraries" && parts[3] == "cover" && parts[4] == "generate":
+			a.adminLibraryCoverGenerate(w, r, parts[2])
+		case len(parts) == 4 && parts[0] == "admin" && parts[1] == "libraries":
+			lid := parts[2]
+			switch parts[3] {
+			case "poster":
+				a.adminLibraryPoster(w, r, lid)
+			case "cover":
+				if r.Method == http.MethodDelete {
+					a.adminLibraryCoverRemove(w, r, lid)
+				} else {
+					a.adminLibraryCover(w, r, lid)
+				}
+			case "generate":
+				a.adminLibraryCoverGenerate(w, r, lid)
+			default:
+				a.fail(w, 404, "未知管理端点")
+			}
+		case p == "/admin/dashboard":
+			a.adminDashboard(w, r)
+		case p == "/admin/activity" && r.Method == http.MethodDelete:
+			a.clearActivity(w, r)
+		case p == "/admin/scrape/config":
+			a.adminScrapeConfig(w, r)
+		case p == "/admin/scrape/state":
+			a.adminScrapeState(w, r)
+		case p == "/admin/scrape/control":
+			a.adminScrapeControl(w, r)
+		case p == "/admin/scrape/failed":
+			a.adminScrapeFailed(w, r)
+		case p == "/admin/scrape/retry":
+			a.adminScrapeRetry(w, r)
+		case p == "/admin/probe/config":
+			a.adminProbeConfig(w, r)
+		case p == "/admin/probe/status":
+			a.adminProbeStatus(w, r)
+		case p == "/admin/probe/batch":
+			a.adminProbeBatch(w, r)
+		case p == "/admin/settings":
+			a.adminSettings(w, r)
+		case p == "/admin/password":
+			a.adminPassword(w, r)
+		case p == "/admin/subtitles":
+			a.adminSubtitles(w, r)
+		case p == "/admin/api":
+			a.adminAPIList(w, r)
 		case p == "/admin/scan":
 			a.adminScan(w, r)
 		case p == "/admin/scan-all":
 			a.adminScan(w, r)
 		case p == "/admin/scan-status":
 			a.adminScanStatus(w, r)
+		case p == "/admin/scan-stop":
+			a.adminScanStop(w, r)
 
 		// ---- TMDB 设置 ----
 		case p == "/admin/tmdb":
@@ -103,6 +158,7 @@ func (a *App) adminLibrariesList(w http.ResponseWriter, r *http.Request) {
 			"ID": lib.ID, "Name": lib.Name, "Path": lib.Path, "Type": lib.Type,
 			"EnableTMDB": lib.EnableTMDB, "Language": lib.Language, "SortOrder": lib.SortOrder,
 			"ItemCount": items, "Scanning": scanning,
+			"Hidden": lib.Hidden, "HasPoster": lib.Poster != "", "DefaultSort": lib.DefaultSort,
 			"LastScan": lib.LastScan, "DateCreated": lib.CreatedAt,
 		})
 	}
@@ -314,11 +370,11 @@ func (a *App) adminStatus(w http.ResponseWriter, r *http.Request) {
 		"ServerName": a.cfg.ServerName, "Version": a.version,
 		"Movies": movies, "Series": series, "Episodes": episodes,
 		"Users": users, "Libraries": libs,
-		"OnlineDevices":   online,
-		"Transcoding":     false,
-		"Playback":        "302 redirect / direct stream",
+		"OnlineDevices":      online,
+		"Transcoding":        false,
+		"Playback":           "302 redirect / direct stream",
 		"DeviceLeaseSeconds": a.cfg.DeviceLeaseSeconds,
-		"MediaRoots":      a.cfg.MediaRoots,
+		"MediaRoots":         a.cfg.MediaRoots,
 	})
 }
 
@@ -334,3 +390,18 @@ func (a *App) adminLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 var _ = auth.ClientIP
+
+// adminScanStop 停止全部正在进行的扫描。
+func (a *App) adminScanStop(w http.ResponseWriter, r *http.Request) {
+	var libs []models.Library
+	a.db.Find(&libs)
+	n := 0
+	for i := range libs {
+		if a.scanner.IsScanning(libs[i].ID) {
+			a.scanner.RequestStop(libs[i].ID)
+			n++
+		}
+	}
+	logx.Info("已请求停止 %d 个扫描任务", n)
+	a.json(w, 200, M{"OK": true, "Stopped": n})
+}

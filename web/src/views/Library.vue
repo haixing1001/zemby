@@ -60,10 +60,24 @@ function posterUrl(it, w) { return imageUrl(it.Id, 'Primary', w) }
 function imgOk(it) { return !broken.value.has(it.Id) }
 function fail(it) { broken.value.add(it.Id) }
 function initial(it) { return (it.Name || '?')[0] }
+const defaultApplied = ref(false)
 
 async function load(append = false) {
   loading.value = true
   try {
+    // 首次加载时应用媒体库默认排序
+    if (!append && !defaultApplied.value) {
+      defaultApplied.value = true
+      try {
+        const v = await api.get(`/Users/${state.userId}/Views`)
+        const lib = (v.Items || []).find(x => x.Id === libId)
+        if (lib && lib.DefaultSort) {
+          const [k, o] = String(lib.DefaultSort).split('|')
+          if (k) sortBy.value = k
+          if (o) sortOrder.value = o
+        }
+      } catch {}
+    }
     const params = {
       ParentId: libId,
       Recursive: 'true',

@@ -32,7 +32,7 @@ import { state, logout } from './api/client'
 
 const route = useRoute()
 const router = useRouter()
-const showNav = computed(() => route.path !== '/login')
+const showNav = computed(() => route.path !== '/login' && !route.path.startsWith('/admin'))
 
 function doLogout() {
   logout()

@@ -2,7 +2,7 @@
 package scanner
 
 import (
-	"path/filepath"
+        "path/filepath"
         "context"
         "encoding/json"
         "fmt"
@@ -18,50 +18,56 @@ import (
         "go-emby/internal/tmdb"
 )
 
-var probeMu sync.Mutex
+var probeMu sync.Mutex // ffprobe 进程级串行保护（限制同时拉起的子进程总数）
 
-// enqueueProbe 加入探测队列。
+// doProbe 执行单个探测任务并计数。
+func (s *Scanner) doProbe(t probeTask) {
+        probeRunning.Add(1)
+        defer probeRunning.Add(-1)
+        defer func() { probeDedupMu.Lock(); delete(probeDedup, t.itemID); probeDedupMu.Unlock() }()
+
+        ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+        r, err := probe.Probe(ctx, t.path)
+        cancel()
+        if err != nil {
+                if batchStop.Load() {
+                        return
+                }
+                probeFailed.Add(1)
+                logx.Warn("ffprobe 失败 %s: %v", filepath.Base(t.path), err)
+                return
+        }
+        // 替换内嵌流（保留外挂字幕）
+        db.DB.Where("item_id = ? AND is_external = ?", t.itemID, false).Delete(&models.MediaStream{})
+        streams := probe.ToStreams(t.sourceID, t.itemID, r)
+        for i := range streams {
+                db.DB.Create(&streams[i])
+        }
+        rt := probe.RunTimeTicks(r)
+        size := int64(0)
+        if v, err := strconv.ParseInt(r.Format.Size, 10, 64); err == nil {
+                size = v
+        }
+        container := firstFormat(r.Format.FormatName)
+        updates := map[string]any{"run_time_ticks": rt, "size": size, "container": container}
+        db.DB.Model(&models.Item{}).Where("id = ?", t.itemID).Updates(updates)
+        db.DB.Model(&models.MediaSource{}).Where("id = ?", t.sourceID).Updates(map[string]any{"size": size})
+        // 刷新图片修订
+        var it models.Item
+        if db.DB.First(&it, "id = ?", t.itemID).Error == nil {
+                db.DB.Model(&it).Update("image_rev", imageRev(it.Poster, it.Backdrop, it.Thumb, it.Logo))
+        }
+        probeDone.Add(1)
+        logx.Detail("scan", fmt.Sprintf("%d 轨道", len(streams)), "媒体信息提取完成 %s", filepath.Base(t.path))
+}
+
+// enqueueProbe 加入探测队列（计数等待数）。
 func (s *Scanner) enqueueProbe(item *models.Item, src models.MediaSource, mtime int64) {
         select {
         case s.probeQueue <- probeTask{sourceID: src.ID, itemID: item.ID, path: src.Path, mtime: mtime}:
+                probeWaiting.Add(1)
         default:
                 logx.Warn("探测队列已满，跳过 %s", src.Path)
-        }
-}
-
-// probeWorker 探测工作线程。
-func (s *Scanner) probeWorker() {
-        for t := range s.probeQueue {
-                probeMu.Lock()
-                ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-                r, err := probe.Probe(ctx, t.path)
-                cancel()
-                probeMu.Unlock()
-                if err != nil {
-                        logx.Warn("ffprobe 失败 %s: %v", filepath.Base(t.path), err)
-                        continue
-                }
-                // 替换内嵌流（保留外挂字幕）
-                db.DB.Where("item_id = ? AND is_external = ?", t.itemID, false).Delete(&models.MediaStream{})
-                streams := probe.ToStreams(t.sourceID, t.itemID, r)
-                for i := range streams {
-                        db.DB.Create(&streams[i])
-                }
-                rt := probe.RunTimeTicks(r)
-                size := int64(0)
-                if v, err := strconv.ParseInt(r.Format.Size, 10, 64); err == nil {
-                        size = v
-                }
-                container := firstFormat(r.Format.FormatName)
-                updates := map[string]any{"run_time_ticks": rt, "size": size, "container": container}
-                db.DB.Model(&models.Item{}).Where("id = ?", t.itemID).Updates(updates)
-                db.DB.Model(&models.MediaSource{}).Where("id = ?", t.sourceID).Updates(map[string]any{"size": size})
-                // 刷新图片修订
-                var it models.Item
-                if db.DB.First(&it, "id = ?", t.itemID).Error == nil {
-                        db.DB.Model(&it).Update("image_rev", imageRev(it.Poster, it.Backdrop, it.Thumb, it.Logo))
-                }
-                logx.Detail("scan", fmt.Sprintf("%d 轨道", len(streams)), "媒体信息提取完成 %s", filepath.Base(t.path))
         }
 }
 
@@ -69,6 +75,7 @@ func (s *Scanner) probeWorker() {
 func (s *Scanner) enqueueScrape(itemID string) {
         select {
         case s.scrapeQueue <- scrapeTask{itemID: itemID}:
+                probeWaiting.Add(1)
         default:
         }
 }
@@ -76,12 +83,30 @@ func (s *Scanner) enqueueScrape(itemID string) {
 // scrapeWorker 刮削工作线程。
 func (s *Scanner) scrapeWorker() {
         for t := range s.scrapeQueue {
-                ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-                if err := s.scrapeItem(ctx, t.itemID); err != nil {
-                        logx.Warn("刮削失败 item=%s: %v", t.itemID, err)
+                probeWaiting.Add(-1)
+                waitWhilePaused()
+                cfg := LoadScrapeConfig()
+                if !cfg.Enabled {
+                        continue // 刮削总开关关闭：丢弃任务
                 }
+                ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+                err := s.scrapeItem(ctx, t.itemID)
                 cancel()
+                if err != nil {
+                        db.DB.Model(&models.Item{}).Where("id = ?", t.itemID).Update("scrape_error", truncateErr(err.Error()))
+                        logx.Warn("刮削失败 item=%s: %v", t.itemID, err)
+                } else {
+                        db.DB.Model(&models.Item{}).Where("id = ? AND scrape_error != ''", t.itemID).Update("scrape_error", "")
+                }
         }
+}
+
+// truncateErr 错误信息截断。
+func truncateErr(s string) string {
+        if len(s) > 480 {
+                return s[:480]
+        }
+        return s
 }
 
 // ScrapeNow 立即同步刮削某条目（供 API 调用）。
@@ -139,7 +164,7 @@ func (s *Scanner) scrapeMovie(ctx context.Context, item *models.Item, set tmdb.S
                 }
                 if len(results) == 0 {
                         logx.Scan("TMDB 未找到电影: %s (%d)", title, year)
-                        return nil
+                        return fmt.Errorf("TMDB 未找到匹配: %s (%d)", title, year)
                 }
                 best := results[0]
                 if year > 0 {
@@ -257,7 +282,7 @@ func (s *Scanner) scrapeSeries(ctx context.Context, item *models.Item, set tmdb.
                 }
                 if len(results) == 0 {
                         logx.Scan("TMDB 未找到剧集: %s", title)
-                        return nil
+                        return fmt.Errorf("TMDB 未找到匹配: %s", title)
                 }
                 best := results[0]
                 if year > 0 {

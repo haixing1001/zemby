@@ -54,11 +54,11 @@ func New(cfg *config.Config) *Scanner {
                 probeQueue:  make(chan probeTask, 4096),
                 scrapeQueue: make(chan scrapeTask, 4096),
         }
-        for i := 0; i < 2; i++ {
-                go s.probeWorker()
-        }
-        for i := 0; i < 2; i++ {
-                go s.scrapeWorker()
+        dataDirOnce.Do(func() { dataDirValue = cfg.DataDir })
+        s.StartWorkers()
+        // 启动时恢复实时监控状态
+        if LoadScrapeConfig().Realtime {
+                s.SetRealtime(true)
         }
         return s
 }
@@ -272,6 +272,7 @@ func (s *Scanner) upsertMovie(lib *models.Library, vf videoFile) error {
         if err := db.DB.Save(&item).Error; err != nil {
                 return err
         }
+        s.restoreMediaInfo(item.ID) // 持久化恢复（命中后不再重新探测）
         // NFO
         s.applyNFO(&item, vf.path, "")
         // 媒体源
@@ -449,6 +450,7 @@ func (s *Scanner) upsertSeries(lib *models.Library, seriesDir string, files []vi
                         continue
                 }
                 cnt.updated++
+                s.restoreMediaInfo(item.ID)
                 s.applyNFO(&item, e.vf.path, "")
                 src := s.ensureSource(&item, e.vf)
                 s.applySubtitles(&item, src, e.vf.path)
@@ -487,6 +489,7 @@ func (s *Scanner) removeMissing(libID string, seen seenPaths) int {
         for _, it := range items {
                 if _, ok := seen[it.Path]; !ok {
                         if _, err := os.Stat(it.Path); err != nil {
+                                s.persistMediaInfo(it.ID) // 持久化开启时保留媒体信息
                                 s.deleteItemCascade(it.ID)
                                 removed++
                         }

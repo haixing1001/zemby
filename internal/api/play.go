@@ -93,13 +93,21 @@ func (a *App) videoStream(w http.ResponseWriter, r *http.Request, id string) {
         }
 
         clientInfo := ""
+        userName := ""
         if idn := auth.From(r); idn != nil {
                 clientInfo = idn.Client
                 if clientInfo == "" {
                         clientInfo = auth.ClientIP(r)
                 }
+                if idn.User != nil {
+                        userName = idn.User.Name
+                }
         }
         logx.Playback("用户开始播放《%s》[%s]", it.Name, clientInfo)
+        a.recordActivity(userName, it.ID, it.Name, clientInfo, "start", 0)
+        if it.Type == "Episode" {
+                go a.scanner.PreloadNext(it.SeriesID, it.ParentIndexNumber, it.IndexNumber)
+        }
 
         // 远程流：302 重定向直连
         if strings.HasPrefix(src.Path, "http://") || strings.HasPrefix(src.Path, "https://") {

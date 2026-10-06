@@ -443,6 +443,10 @@ func (a *App) itemDetail(w http.ResponseWriter, r *http.Request, id string) {
                 a.fail(w, 404, "条目不存在")
                 return
         }
+        // 浏览时提取：缺媒体信息则后台补齐（异步，不阻塞响应）
+        if it.Type == "Movie" || it.Type == "Episode" {
+                go a.scanner.TryProbeOnBrowse(it.ID)
+        }
         uid := ""
         if idn := auth.From(r); idn != nil && idn.User != nil {
                 uid = idn.User.ID
