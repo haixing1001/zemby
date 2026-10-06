@@ -30,10 +30,12 @@ func (s *Scanner) applyNFO(item *models.Item, videoPath, nfoName string) {
                 candidates = candidates[:1]
         }
         var parsed *nfo.NFO
+        nfoPath := ""
         for _, c := range candidates {
                 if fi, err := os.Stat(c); err == nil && !fi.IsDir() {
                         if n, err := nfo.ParseFile(c); err == nil {
                                 parsed = n
+                                nfoPath = c
                                 break
                         }
                 }
@@ -41,6 +43,7 @@ func (s *Scanner) applyNFO(item *models.Item, videoPath, nfoName string) {
         if parsed == nil {
                 return
         }
+        s.tlog(item.LibraryID, "info", "读取 NFO「%s」：《%s》· %s", filepath.Base(nfoPath), parsed.Title, nfoPath)
         changed := false
         if parsed.Title != "" {
                 item.Name = parsed.Title
@@ -295,6 +298,7 @@ func (s *Scanner) applySubtitles(item *models.Item, src models.MediaSource, vide
         }
         if len(subs) > 0 {
                 logx.InfoC(logx.CatSubtitle, "《%s》匹配到 %d 个外挂字幕", item.Name, len(subs))
+                s.tlog(item.LibraryID, "info", "《%s》匹配到 %d 个外挂字幕：%s", item.Name, len(subs), filepath.Base(videoPath))
         }
 }
 
@@ -355,6 +359,20 @@ func (s *Scanner) applyLocalImages(item *models.Item, dir, base string) {
         if changed {
                 item.ImageRev = imageRev(item.Poster, item.Backdrop, item.Thumb, item.Logo)
                 db.DB.Save(item)
+                var found []string
+                if item.Poster != "" {
+                        found = append(found, "海报")
+                }
+                if item.Backdrop != "" {
+                        found = append(found, "背景")
+                }
+                if item.Logo != "" {
+                        found = append(found, "Logo")
+                }
+                if item.Thumb != "" {
+                        found = append(found, "缩略图")
+                }
+                s.tlog(item.LibraryID, "info", "本地图片「%s」：%s", filepath.Base(item.Path), strings.Join(found, "/"))
         }
 }
 
@@ -376,6 +394,7 @@ var _ = fmt.Sprintf
 
 // refreshLight 未变化文件的轻量刷新（字幕与本地图片）。
 func (s *Scanner) refreshLight(item *models.Item, vf videoFile) {
+        s.tlog(item.LibraryID, "info", "未变化，轻量刷新：%s", vf.path)
         var src models.MediaSource
         if err := db.DB.Where("item_id = ?", item.ID).First(&src).Error; err != nil {
                 return

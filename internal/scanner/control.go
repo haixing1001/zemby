@@ -369,6 +369,7 @@ func ProbeStatus() map[string]any {
                 "Skipped":     probeSkipped.Load(),
                 "Concurrency": cfg.Concurrency,
                 "BatchRunning": batchRunning.Load(),
+                "Logs":        logx.TaskLogSnapshot("probe", 300),
         }
 }
 

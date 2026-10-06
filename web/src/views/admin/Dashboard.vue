@@ -48,18 +48,48 @@
     <div class="collapse-sec">
       <div class="head" @click="sec.tasks = !sec.tasks">任务状态<span class="arrow" :class="{ open: sec.tasks }">⌄</span></div>
       <div class="body" v-if="sec.tasks">
-        <div v-if="!(d.Tasks && d.Tasks.length)" class="empty-line">当前没有任务</div>
+        <!-- 刮削任务 -->
+        <div class="task-line" @click="sec.scrapeLog = !sec.scrapeLog">
+          <span class="tag">刮削任务</span>
+          <span :class="['st', d.ScrapeState === 'running' ? 'run' : '']">{{ scrapeStateName }}</span>
+          <span class="muted">待刮削 {{ d.ScrapePending ?? 0 }} · 失败 {{ d.ScrapeFailed ?? 0 }}</span>
+          <span style="flex:1"></span>
+          <span class="task-arrow" :class="{ open: sec.scrapeLog }">⌄</span>
+        </div>
+        <TaskLogView v-if="sec.scrapeLog" :lines="d.ScrapeLogs" />
+
+        <!-- 媒体信息提取任务 -->
+        <div class="task-line" @click="sec.probeLog = !sec.probeLog">
+          <span class="tag">媒体信息提取</span>
+          <span class="muted">点击展开实时提取日志</span>
+          <span style="flex:1"></span>
+          <span class="task-arrow" :class="{ open: sec.probeLog }">⌄</span>
+        </div>
+        <TaskLogView v-if="sec.probeLog" :lines="d.ProbeLogs" />
+
+        <!-- 扫描任务列表 -->
+        <div v-if="!(d.Tasks && d.Tasks.length)" class="empty-line">当前没有扫描任务</div>
         <table v-else class="tbl">
           <thead><tr><th>媒体库</th><th>类型</th><th>状态</th><th>开始时间</th></tr></thead>
           <tbody>
-            <tr v-for="t in d.Tasks" :key="t.ID">
-              <td>{{ t.Library || '-' }}</td>
-              <td>{{ t.Mode === 'full' ? '全量扫描' : t.Mode === 'scrape' ? '刮削' : '增量扫描' }}</td>
-              <td>
-                <span class="tag" :class="{ gray: t.State === 'done' }">{{ taskState(t.State) }}</span>
-              </td>
-              <td class="muted">{{ fmtTime(t.StartedAt) }}</td>
-            </tr>
+            <template v-for="t in d.Tasks" :key="t.ID">
+              <tr class="task-row" @click="expandTask = expandTask === t.ID ? 0 : t.ID">
+                <td>{{ t.Library || '-' }}</td>
+                <td>{{ t.Mode === 'full' ? '全量扫描' : t.Mode === 'scrape' ? '刮削' : '增量扫描' }}</td>
+                <td>
+                  <span class="tag" :class="{ gray: t.State === 'done' }">{{ taskState(t.State) }}</span>
+                </td>
+                <td class="muted">
+                  {{ fmtTime(t.StartedAt) }}
+                  <span class="task-arrow" :class="{ open: expandTask === t.ID }" style="margin-left:6px;">⌄</span>
+                </td>
+              </tr>
+              <tr v-if="expandTask === t.ID">
+                <td colspan="4" style="padding:0 4px 10px;">
+                  <TaskLogView :lines="t.Logs" />
+                </td>
+              </tr>
+            </template>
           </tbody>
         </table>
       </div>
@@ -88,13 +118,17 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, onBeforeUnmount } from 'vue'
+import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue'
 import { api } from '../../api/client'
 import { fmtTime, toast, errText } from './util'
+import TaskLogView from './TaskLogView.vue'
 
 const d = ref({})
-const sec = reactive({ playing: true, tasks: true, activity: true })
+const sec = reactive({ playing: true, tasks: true, activity: true, scrapeLog: false, probeLog: false })
+const expandTask = ref(0)
 let timer = null
+
+const scrapeStateName = computed(() => ({ idle: '空闲', running: '运行中', paused: '已暂停' }[d.value.ScrapeState] || d.value.ScrapeState || '-'))
 
 async function load() {
   try { d.value = await api.admin.dashboard() } catch {}
@@ -113,7 +147,7 @@ function actName(a) {
 
 onMounted(() => {
   load()
-  timer = setInterval(load, 8000)
+  timer = setInterval(load, 5000)
 })
 onBeforeUnmount(() => clearInterval(timer))
 </script>

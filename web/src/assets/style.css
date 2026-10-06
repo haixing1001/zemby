@@ -270,6 +270,28 @@ table.tbl { width: 100%; border-collapse: collapse; }
 .adm-item .aux-arrow.open { transform: rotate(180deg); }
 .adm-item.aux-on { color: #5b9bff; }
 .adm-item.aux-on .aux-arrow { color: #5b9bff; }
+/* 任务详细日志（控制台/刮削管理/媒体信息共用） */
+.task-line { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; cursor: pointer; font-size: 13.5px; color: #c6cdd8; }
+.task-line:hover { background: #181d25; }
+.task-line .st.run { color: #3fb950; }
+.task-arrow { color: #6b7482; font-size: 13px; transition: transform .15s; display: inline-block; }
+.task-arrow.open { transform: rotate(180deg); }
+.task-row { cursor: pointer; }
+.task-row:hover td { background: #141922; }
+.tlog {
+  background: #0d1016; border: 1px solid #1b2028; border-radius: 8px;
+  padding: 8px 10px; margin: 6px 0 4px; max-height: 300px; overflow-y: auto;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; font-size: 12px;
+}
+.tlog-line { display: flex; gap: 8px; padding: 1.5px 0; line-height: 1.5; }
+.tlog-time { color: #566070; flex: 0 0 auto; }
+.tlog-lv { flex: 0 0 34px; color: #4d5560; }
+.tlog-lv.warn { color: #e3a008; }
+.tlog-lv.error { color: #f85149; }
+.tlog-msg { flex: 1; word-break: break-all; color: #b8c0cc; white-space: pre-wrap; }
+.tlog-msg.warn { color: #e0b34d; }
+.tlog-msg.err { color: #f88a80; }
+.tlog-empty { text-align: center; color: #4d5560; padding: 18px 0; font-size: 12px; }
 .adm-version { padding: 12px; color: #566070; font-size: 12px; display: flex; align-items: center; gap: 8px; }
 .adm-topbar { display: none; }
 @media (max-width: 900px) {

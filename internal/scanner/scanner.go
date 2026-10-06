@@ -114,6 +114,15 @@ func (s *Scanner) ScanLibrary(libID, mode string) error {
 // seenPaths 记录扫描中看到的文件。
 type seenPaths map[string]int64 // path -> mtime
 
+// tlog 向指定媒体库当前扫描任务的日志环写入（无运行中的扫描则为 no-op）。
+func (s *Scanner) tlog(libID, level, format string, a ...any) {
+        key := "scan:lib:" + libID
+        if !logx.TaskRingHas(key) {
+                return
+        }
+        logx.TaskLog(key, level, format, a...)
+}
+
 func (s *Scanner) runScan(lib *models.Library, mode string) {
         start := time.Now()
         full := mode != "update"
@@ -121,18 +130,30 @@ func (s *Scanner) runScan(lib *models.Library, mode string) {
 
         task := models.ScanTask{LibraryID: lib.ID, Mode: mode, State: "running", StartedAt: time.Now()}
         db.DB.Create(&task)
+        // 任务日志环：scan:<taskID> 供控制台按任务查看；scan:lib:<libID> 为扫描期间的别名（供各处理函数写入）
+        ring := logx.NewTaskRing(800)
+        taskKey := fmt.Sprintf("scan:%d", task.ID)
+        libKey := "scan:lib:" + lib.ID
+        logx.TaskRingSet(taskKey, ring)
+        logx.TaskRingSet(libKey, ring)
+        defer logx.TaskRingDrop(libKey)
+        ring.Addf("info", "开始%s媒体库「%s」· 模式=%s · 根目录=%s · 任务ID=%d",
+                map[bool]string{true: "全量", false: "增量"}[full], lib.Name, mode, lib.Path, task.ID)
+
+        seen := seenPaths{}
+        var counters struct{ files, newItems, updated, skipped int }
+        var removed int
         defer func() {
                 now := time.Now()
                 task.State, task.EndedAt = "done", &now
+                task.Message = fmt.Sprintf("文件 %d · 新增 %d · 更新 %d · 跳过 %d · 清理 %d · 耗时 %s",
+                        counters.files, counters.newItems, counters.updated, counters.skipped, removed, time.Since(start).Round(time.Second))
                 db.DB.Save(&task)
                 db.DB.Model(&models.Library{}).Where("id = ?", lib.ID).Update("last_scan", now)
         }()
 
         db.DB.Model(&models.Library{}).Where("id = ?", lib.ID).Update("scanning", true)
         defer db.DB.Model(&models.Library{}).Where("id = ?", lib.ID).Update("scanning", false)
-
-        seen := seenPaths{}
-        var counters struct{ files, newItems, updated, skipped int }
 
         for _, root := range strings.Split(lib.Path, ";") {
                 root = strings.TrimSpace(root)
@@ -141,8 +162,10 @@ func (s *Scanner) runScan(lib *models.Library, mode string) {
                 }
                 if _, err := os.Stat(root); err != nil {
                         logx.WarnC(logx.CatScan, "媒体目录不可访问: %s", root)
+                        s.tlog(lib.ID, "warn", "媒体目录不可访问：%s", root)
                         continue
                 }
+                s.tlog(lib.ID, "info", "扫描根目录：%s", root)
                 if lib.Type == "tvshows" {
                         s.scanTVDir(lib, root, full, seen, &counters)
                 } else {
@@ -150,18 +173,20 @@ func (s *Scanner) runScan(lib *models.Library, mode string) {
                 }
                 if s.stopped(lib.ID) {
                         logx.WarnC(logx.CatScan, "媒体库「%s」扫描被手动停止", lib.Name)
+                        s.tlog(lib.ID, "warn", "扫描被手动停止")
                         break
                 }
         }
 
         // 删除已不存在的条目（文件消失）
-        var removed int
         if full || true { // 增量也校验存在性（开销低）
                 removed = s.removeMissing(lib.ID, seen)
         }
 
         logx.Scan("媒体库「%s」扫描完成：文件 %d，新增 %d，更新 %d，跳过 %d，清理 %d，耗时 %s",
                 lib.Name, counters.files, counters.newItems, counters.updated, counters.skipped, removed, time.Since(start).Round(time.Second))
+        ring.Addf("info", "扫描完成：文件 %d · 新增 %d · 更新 %d · 跳过 %d · 清理 %d · 耗时 %s",
+                counters.files, counters.newItems, counters.updated, counters.skipped, removed, time.Since(start).Round(time.Second))
 }
 
 // walkFile 收集一个视频文件并处理。
@@ -216,6 +241,7 @@ func (s *Scanner) scanMoviesDir(lib *models.Library, root string, full bool, see
                 }
                 if err := s.upsertMovie(lib, vf); err != nil {
                         logx.WarnC(logx.CatScan, "处理失败 %s: %v", vf.path, err)
+                        s.tlog(lib.ID, "error", "处理失败 %s：%v", vf.path, err)
                         continue
                 }
                 cnt.updated++
@@ -274,6 +300,8 @@ func (s *Scanner) upsertMovie(lib *models.Library, vf videoFile) error {
         if err := db.DB.Save(&item).Error; err != nil {
                 return err
         }
+        s.tlog(item.LibraryID, "info", "%s电影「%s」(%d) · %s",
+                map[bool]string{true: "新增", false: "更新"}[existing == nil], item.Name, item.Year, vf.path)
         s.restoreMediaInfo(item.ID) // 持久化恢复（命中后不再重新探测）
         // NFO
         s.applyNFO(&item, vf.path, "")
@@ -327,6 +355,8 @@ func (s *Scanner) upsertSeries(lib *models.Library, seriesDir string, files []vi
                 series.ImageRev = imageRev(series.Poster, fmt.Sprint(series.Mtime))
                 db.DB.Save(&series)
         }
+        s.tlog(lib.ID, "info", "%s剧集「%s」· %s",
+                map[bool]string{true: "新增", false: "更新"}[existingSeries == nil], seriesName, seriesDir)
 
         // tvshow.nfo 元数据
         if seriesNFO != nil {
@@ -452,6 +482,8 @@ func (s *Scanner) upsertSeries(lib *models.Library, seriesDir string, files []vi
                         continue
                 }
                 cnt.updated++
+                s.tlog(lib.ID, "info", "%s S%02dE%02d「%s」· %s",
+                        map[bool]string{true: "新增", false: "更新"}[existing == nil], e.season, e.episode, item.Name, e.vf.path)
                 s.restoreMediaInfo(item.ID)
                 s.applyNFO(&item, e.vf.path, "")
                 src := s.ensureSource(&item, e.vf)
@@ -494,6 +526,7 @@ func (s *Scanner) removeMissing(libID string, seen seenPaths) int {
                                 s.persistMediaInfo(it.ID) // 持久化开启时保留媒体信息
                                 s.deleteItemCascade(it.ID)
                                 removed++
+                                s.tlog(libID, "warn", "清理缺失条目「%s」：%s", it.Name, it.Path)
                         }
                 }
         }

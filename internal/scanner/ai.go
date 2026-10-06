@@ -161,16 +161,20 @@ func (s *Scanner) aiRetrySearch(ctx context.Context, itemType string, path, name
                 return "", 0, false
         }
         logx.InfoC(logx.CatAI, "TMDB 识别失败，调用 AI 辅助提取关键词：《%s》", name)
+        logx.TaskLog("scrape", "info", "TMDB 识别失败，调用 AI 辅助提取关键词：《%s》· 路径 %s", name, path)
         k, err := AIExtractKeywords(ctx, cfg, itemType, path, name, year)
         if err != nil {
                 logx.WarnC(logx.CatAI, "AI 关键词提取失败: %v", err)
+                logx.TaskLog("scrape", "warn", "AI 关键词提取失败：%v", err)
                 return "", 0, false
         }
         title := k.Title
         if k.OriginalTitle != "" && k.OriginalTitle != k.Title {
                 logx.InfoC(logx.CatAI, "AI 提取关键词：「%s」/「%s」(%d)", k.Title, k.OriginalTitle, k.Year)
+                logx.TaskLog("scrape", "info", "AI 提取关键词：「%s」/「%s」(%d)", k.Title, k.OriginalTitle, k.Year)
         } else {
                 logx.InfoC(logx.CatAI, "AI 提取关键词：「%s」(%d)", title, k.Year)
+                logx.TaskLog("scrape", "info", "AI 提取关键词：「%s」(%d)", title, k.Year)
         }
         return title, k.Year, true
 }

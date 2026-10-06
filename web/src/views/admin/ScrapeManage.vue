@@ -53,6 +53,17 @@
       <button class="btn ghost" @click="ctrl('stop')" :disabled="st.State === 'idle'">停止</button>
     </div>
 
+    <!-- 任务详细日志 -->
+    <div class="collapse-sec">
+      <div class="head" @click="showLog = !showLog">
+        任务详细日志
+        <span class="arrow" :class="{ open: showLog }">⌄</span>
+      </div>
+      <div class="body" v-if="showLog">
+        <TaskLogView :lines="st.Logs" />
+      </div>
+    </div>
+
     <!-- 失败清单 -->
     <div class="collapse-sec">
       <div class="head">
@@ -98,11 +109,13 @@
 
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import TaskLogView from './TaskLogView.vue'
 import { api } from '../../api/client'
 import { fmtTime, toast, errText } from './util'
 
 const cfg = ref({ enabled: true, realtime: false, autoRefresh: true, manual: true, overwrite: 'skip' })
 const st = ref({ State: 'idle', Pending: 0, Failed: 0 })
+const showLog = ref(true)
 const failed = ref([])
 const logs = ref([])
 const logBox = ref(null)

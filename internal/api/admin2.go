@@ -127,6 +127,7 @@ func (a *App) adminDashboard(w http.ResponseWriter, r *http.Request) {
                 taskList = append(taskList, map[string]any{
                         "ID": t.ID, "Library": libName, "Mode": t.Mode, "State": t.State,
                         "Message": t.Message, "Total": t.Total, "Done": t.Done, "StartedAt": embyTime(t.StartedAt),
+                        "Logs": logx.TaskLogSnapshot(fmt.Sprintf("scan:%d", t.ID), 400),
                 })
         }
 
@@ -140,6 +141,11 @@ func (a *App) adminDashboard(w http.ResponseWriter, r *http.Request) {
                         "Device": at.Device, "CreatedAt": embyTime(at.CreatedAt),
                 })
         }
+
+        // 刮削/提取任务计数
+        var scrapePending, scrapeFailed int64
+        a.db.Model(&models.Item{}).Where("type IN ? AND scraped = ?", []string{"Movie", "Series"}, false).Count(&scrapePending)
+        a.db.Model(&models.Item{}).Where("type IN ? AND scraped = ? AND scrape_error != ''", []string{"Movie", "Series"}, false).Count(&scrapeFailed)
 
         uptime := time.Since(procStart)
         dur := func(d time.Duration) string {
@@ -159,6 +165,9 @@ func (a *App) adminDashboard(w http.ResponseWriter, r *http.Request) {
                 "PlayingCount": len(playing), "NowPlaying": playing,
                 "Tasks": taskList, "Activity": activity,
                 "ScrapeState": scanner.GetScrapeState(),
+                "ScrapePending": scrapePending, "ScrapeFailed": scrapeFailed,
+                "ScrapeLogs": logx.TaskLogSnapshot("scrape", 250),
+                "ProbeLogs":  logx.TaskLogSnapshot("probe", 250),
         })
 }
 
@@ -402,6 +411,7 @@ func (a *App) adminScrapeState(w http.ResponseWriter, r *http.Request) {
         a.db.Model(&models.Item{}).Where("type IN ? AND scraped = ? AND scrape_error != ''", []string{"Movie", "Series"}, false).Count(&failed)
         a.json(w, 200, M{
                 "State": scanner.GetScrapeState(), "Pending": pending, "Failed": failed,
+                "Logs": logx.TaskLogSnapshot("scrape", 300),
         })
 }
 

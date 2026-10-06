@@ -25,8 +25,10 @@ func (s *Scanner) doProbe(t probeTask) {
         probeRunning.Add(1)
         defer probeRunning.Add(-1)
         defer func() { probeDedupMu.Lock(); delete(probeDedup, t.itemID); probeDedupMu.Unlock() }()
+        start := time.Now()
 
         ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+        logx.TaskLog("probe", "info", "开始提取：%s", t.path)
         r, err := probe.Probe(ctx, t.path)
         cancel()
         if err != nil {
@@ -35,6 +37,7 @@ func (s *Scanner) doProbe(t probeTask) {
                 }
                 probeFailed.Add(1)
                 logx.WarnC(logx.CatProbe, "ffprobe 失败 %s: %v", filepath.Base(t.path), err)
+                logx.TaskLog("probe", "warn", "提取失败 %s：%v", t.path, err)
                 return
         }
         // 替换内嵌流（保留外挂字幕）
@@ -58,7 +61,28 @@ func (s *Scanner) doProbe(t probeTask) {
                 db.DB.Model(&it).Update("image_rev", imageRev(it.Poster, it.Backdrop, it.Thumb, it.Logo))
         }
         probeDone.Add(1)
+        // 任务详细日志：流信息摘要
+        var vc, ac, sc int
+        var vDesc string
+        for i := range streams {
+                switch streams[i].Type {
+                case "Video":
+                        vc++
+                        if vDesc == "" {
+                                vDesc = fmt.Sprintf("%s %dx%d", strings.ToUpper(streams[i].Codec), streams[i].Width, streams[i].Height)
+                        }
+                case "Audio":
+                        ac++
+                case "Subtitle":
+                        sc++
+                }
+        }
+        if vDesc == "" {
+                vDesc = "无视频轨"
+        }
         logx.DetailC(logx.CatProbe, "info", fmt.Sprintf("%d 轨道", len(streams)), "媒体信息提取完成 %s", filepath.Base(t.path))
+        logx.TaskLog("probe", "info", "提取完成 %s · %s · 内嵌 视频%d/音频%d/字幕%d 共%d轨 · 耗时 %s",
+                t.path, vDesc, vc, ac, sc, len(streams), time.Since(start).Round(time.Millisecond))
         // 剧集媒体信息复用：同季缺失的集复制本次提取结果
         if LoadEnhanceConfig().EpisodeMediaReuse {
                 s.reuseSeasonStreams(t.itemID)
@@ -136,6 +160,7 @@ func (s *Scanner) enqueueProbe(item *models.Item, src models.MediaSource, mtime 
                 probeWaiting.Add(1)
         default:
                 logx.WarnC(logx.CatProbe, "探测队列已满，跳过 %s", src.Path)
+                logx.TaskLog("probe", "warn", "探测队列已满，跳过 %s", src.Path)
         }
 }
 
@@ -200,19 +225,32 @@ func (s *Scanner) scrapeItem(ctx context.Context, itemID string) error {
         if err := db.DB.First(&item, "id = ?", itemID).Error; err != nil {
                 return err
         }
+        typeLabel := "条目"
+        switch item.Type {
+        case "Movie":
+                typeLabel = "电影"
+        case "Series":
+                typeLabel = "剧集"
+        }
+        logx.TaskLog("scrape", "info", "开始刮削%s「%s」(%d) · %s", typeLabel, item.Name, item.Year, item.Path)
         // 已有 TMDB ID（NFO 提供）则直接获取详情
         ids := map[string]string{}
         if item.ProviderIDs != "" {
                 _ = json.Unmarshal([]byte(item.ProviderIDs), &ids)
         }
-
+        var err error
         switch item.Type {
         case "Movie":
-                return s.scrapeMovie(ctx, &item, set, ids)
+                err = s.scrapeMovie(ctx, &item, set, ids)
         case "Series":
-                return s.scrapeSeries(ctx, &item, set, ids)
+                err = s.scrapeSeries(ctx, &item, set, ids)
+        default:
+                return nil
         }
-        return nil
+        if err != nil {
+                logx.TaskLog("scrape", "error", "刮削失败「%s」：%v", item.Name, err)
+        }
+        return err
 }
 
 func (s *Scanner) scrapeMovie(ctx context.Context, item *models.Item, set tmdb.Settings, ids map[string]string) error {
@@ -226,11 +264,13 @@ func (s *Scanner) scrapeMovie(ctx context.Context, item *models.Item, set tmdb.S
         }
         if detail == nil {
                 title, year := item.Name, item.Year
+                logx.TaskLog("scrape", "info", "TMDB 搜索电影：「%s」(%d)", title, year)
                 results, err := tmdb.SearchMovie(ctx, set.APIKey, title, set.Language, year)
                 if err != nil {
                         return err
                 }
                 if len(results) == 0 && year > 0 {
+                        logx.TaskLog("scrape", "info", "带年份无结果，降级无年份重搜「%s」", title)
                         results, err = tmdb.SearchMovie(ctx, set.APIKey, title, set.Language, 0)
                         if err != nil {
                                 return err
@@ -239,6 +279,7 @@ func (s *Scanner) scrapeMovie(ctx context.Context, item *models.Item, set tmdb.S
                 if len(results) == 0 {
                         // AI 识别辅助：从文件路径提取关键词后重试搜索
                         if aiTitle, aiYear, ok := s.aiRetrySearch(ctx, "Movie", item.Path, item.Name, item.Year); ok {
+                                logx.TaskLog("scrape", "info", "AI 关键词重搜电影：「%s」(%d)", aiTitle, aiYear)
                                 results, err = tmdb.SearchMovie(ctx, set.APIKey, aiTitle, set.Language, aiYear)
                                 if err == nil && len(results) == 0 && aiYear > 0 {
                                         results, err = tmdb.SearchMovie(ctx, set.APIKey, aiTitle, set.Language, 0)
@@ -248,6 +289,7 @@ func (s *Scanner) scrapeMovie(ctx context.Context, item *models.Item, set tmdb.S
                                 }
                         }
                 }
+                logx.TaskLog("scrape", "info", "搜索结果：%d 条", len(results))
                 if len(results) == 0 {
                         logx.InfoC(logx.CatTMDB, "TMDB 未找到电影: %s (%d)", title, year)
                         return fmt.Errorf("TMDB 未找到匹配: %s (%d)", title, year)
@@ -261,6 +303,7 @@ func (s *Scanner) scrapeMovie(ctx context.Context, item *models.Item, set tmdb.S
                                 }
                         }
                 }
+                logx.TaskLog("scrape", "info", "命中《%s》(首播 %s) TmdbID=%d", best.Title, best.ReleaseDate, best.ID)
                 d, err := tmdb.GetMovie(ctx, set.APIKey, best.ID, set.Language)
                 if err != nil {
                         return err
@@ -272,6 +315,8 @@ func (s *Scanner) scrapeMovie(ctx context.Context, item *models.Item, set tmdb.S
                 return err
         }
         logx.InfoC(logx.CatScrape, "刮削电影《%s》(%d) 完成", item.Name, item.Year)
+        logx.TaskLog("scrape", "info", "电影《%s》(%d) 刮削完成 · 评分 %.1f · 类型 %s · 海报=%v 背景=%v",
+                item.Name, item.Year, item.CommunityRating, item.Genres, item.Poster != "", item.Backdrop != "")
         return nil
 }
 
@@ -356,11 +401,13 @@ func (s *Scanner) scrapeSeries(ctx context.Context, item *models.Item, set tmdb.
         }
         if detail == nil {
                 title, year := item.Name, item.Year
+                logx.TaskLog("scrape", "info", "TMDB 搜索剧集：「%s」(%d)", title, year)
                 results, err := tmdb.SearchTV(ctx, set.APIKey, title, set.Language, year)
                 if err != nil {
                         return err
                 }
                 if len(results) == 0 && year > 0 {
+                        logx.TaskLog("scrape", "info", "带年份无结果，降级无年份重搜「%s」", title)
                         results, err = tmdb.SearchTV(ctx, set.APIKey, title, set.Language, 0)
                         if err != nil {
                                 return err
@@ -369,6 +416,7 @@ func (s *Scanner) scrapeSeries(ctx context.Context, item *models.Item, set tmdb.
                 if len(results) == 0 {
                         // AI 识别辅助：从文件路径提取关键词后重试搜索
                         if aiTitle, aiYear, ok := s.aiRetrySearch(ctx, "Series", item.Path, item.Name, item.Year); ok {
+                                logx.TaskLog("scrape", "info", "AI 关键词重搜剧集：「%s」(%d)", aiTitle, aiYear)
                                 results, err = tmdb.SearchTV(ctx, set.APIKey, aiTitle, set.Language, aiYear)
                                 if err == nil && len(results) == 0 && aiYear > 0 {
                                         results, err = tmdb.SearchTV(ctx, set.APIKey, aiTitle, set.Language, 0)
@@ -378,6 +426,7 @@ func (s *Scanner) scrapeSeries(ctx context.Context, item *models.Item, set tmdb.
                                 }
                         }
                 }
+                logx.TaskLog("scrape", "info", "搜索结果：%d 条", len(results))
                 if len(results) == 0 {
                         logx.InfoC(logx.CatTMDB, "TMDB 未找到剧集: %s", title)
                         return fmt.Errorf("TMDB 未找到匹配: %s", title)
@@ -391,6 +440,7 @@ func (s *Scanner) scrapeSeries(ctx context.Context, item *models.Item, set tmdb.
                                 }
                         }
                 }
+                logx.TaskLog("scrape", "info", "命中《%s》(首播 %s) TmdbID=%d", best.Name, best.FirstAirDate, best.ID)
                 d, err := tmdb.GetTV(ctx, set.APIKey, best.ID, set.Language)
                 if err != nil {
                         return err
@@ -437,6 +487,8 @@ func (s *Scanner) scrapeSeries(ctx context.Context, item *models.Item, set tmdb.
                 return err
         }
         logx.InfoC(logx.CatScrape, "刮削剧集《%s》完成（共 %d 季）", item.Name, detail.NumberOfSeasons)
+        logx.TaskLog("scrape", "info", "剧集《%s》刮削完成 · 共 %d 季 · 评分 %.1f · 海报=%v 背景=%v，继续刮削各季各集",
+                item.Name, detail.NumberOfSeasons, item.CommunityRating, item.Poster != "", item.Backdrop != "")
 
         // 刮削各季与各集
         s.scrapeSeasons(ctx, item, set, detail.ID)
@@ -470,6 +522,7 @@ func (s *Scanner) scrapeSeasons(ctx context.Context, series *models.Item, set tm
                 // 更新集信息
                 var episodes []models.Item
                 db.DB.Where("season_id = ?", season.ID).Order("index_number").Find(&episodes)
+                logx.TaskLog("scrape", "info", "《%s》第 %d 季「%s」刮削完成 · 本季 %d 集", series.Name, season.ParentIndexNumber, season.Name, len(episodes))
                 for i := range resp.Episodes {
                         e := resp.Episodes[i]
                         for j := range episodes {

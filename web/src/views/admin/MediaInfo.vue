@@ -54,6 +54,17 @@
         <button class="btn" @click="save">保存</button>
       </div>
     </div>
+
+    <!-- 提取详细日志 -->
+    <div class="collapse-sec">
+      <div class="head" @click="showLog = !showLog">
+        提取详细日志
+        <span class="arrow" :class="{ open: showLog }">⌄</span>
+      </div>
+      <div class="body" v-if="showLog">
+        <TaskLogView :lines="ps.Logs" />
+      </div>
+    </div>
   </div>
 </template>
 
@@ -61,9 +72,11 @@
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { api } from '../../api/client'
 import { toast, errText } from './util'
+import TaskLogView from './TaskLogView.vue'
 
 const cfg = ref({ onBrowse: true, preloadNext: true, persist: false, saveDir: '', concurrency: 2 })
 const ps = ref({})
+const showLog = ref(true)
 let timer = null
 
 const stateText = computed(() =>
