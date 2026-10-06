@@ -1,0 +1,12 @@
+# 本地运行产物
+/data/
+*.db
+*.db-shm
+*.db-wal
+go-emby
+
+# 前端
+web/node_modules/
+
+# 测试
+*.log

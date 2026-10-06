@@ -1,0 +1,634 @@
+// Package api 条目查询引擎（Items）。
+package api
+
+import (
+        "encoding/json"
+        "net/http"
+        "sort"
+        "strings"
+        "time"
+
+        "go-emby/internal/auth"
+        "go-emby/internal/models"
+)
+
+// itemQuery 查询参数。
+type itemQuery struct {
+        UserID      string
+        ParentID    string
+        LibID       string
+        SeriesID    string
+        SeasonID    string
+        IncludeItemTypes []string
+        Recursive   bool
+        SearchTerm  string
+        Genres      []string
+        Years       []int
+        Filters     []string
+        SortBy      string
+        SortOrder   string
+        Limit       int
+        StartIndex  int
+        ids         []string
+        IsFolder    *bool
+        Fields      []string
+        EnableTotal bool
+        Resume      bool
+        Favorite    bool
+        Played      *bool
+        MinRating   float64
+        // detail 模式
+        Detail bool
+}
+
+// parseQuery 解析查询参数。
+func (a *App) parseQuery(r *http.Request, mode string) *itemQuery {
+        qry := &itemQuery{
+                SortBy:      strings.ToLower(q(r, "SortBy")),
+                SortOrder:   strings.ToLower(q(r, "SortOrder")),
+                Limit:       qInt(r, "Limit", 60),
+                StartIndex:  qInt(r, "StartIndex", 0),
+                Recursive:   qBool(r, "Recursive"),
+                SearchTerm:  strings.TrimSpace(q(r, "SearchTerm")),
+                EnableTotal: !strings.EqualFold(q(r, "EnableTotalRecordCount"), "false"),
+        }
+        if mode == "resume" {
+                qry.Resume = true
+        }
+        if v := q(r, "UserId"); v != "" {
+                qry.UserID = strings.ToLower(v)
+        }
+        if id := auth.From(r); id != nil && id.User != nil && qry.UserID == "" {
+                qry.UserID = id.User.ID
+        }
+        if v := q(r, "ParentId"); v != "" {
+                qry.ParentID = strings.ToLower(v)
+        }
+        if v := q(r, "Ids"); v != "" {
+                for _, x := range strings.Split(v, ",") {
+                        x = strings.TrimSpace(strings.ToLower(x))
+                        if x != "" {
+                                qry.ids = append(qry.ids, x)
+                        }
+                }
+        }
+        splitParam := func(name string) []string {
+                v := q(r, name)
+                if v == "" {
+                        return nil
+                }
+                var out []string
+                for _, x := range strings.Split(v, ",") {
+                        x = strings.TrimSpace(x)
+                        if x != "" {
+                                out = append(out, x)
+                        }
+                }
+                return out
+        }
+        qry.IncludeItemTypes = normalizeTypes(splitParam("IncludeItemTypes"))
+        for _, g := range splitParam("Genres") {
+                for _, x := range strings.Split(g, "|") {
+                        if x = strings.TrimSpace(x); x != "" {
+                                qry.Genres = append(qry.Genres, x)
+                        }
+                }
+        }
+        for _, y := range splitParam("Years") {
+                n := 0
+                ok := true
+                for i := 0; i < len(y); i++ {
+                        if y[i] < '0' || y[i] > '9' {
+                                ok = false
+                                break
+                        }
+                        n = n*10 + int(y[i]-'0')
+                }
+                if ok && n > 0 {
+                        qry.Years = append(qry.Years, n)
+                }
+        }
+        for _, f := range splitParam("Filters") {
+                qry.Filters = append(qry.Filters, strings.ToLower(f))
+        }
+        // 单独的 IsPlayed / IsFavorite 参数
+        if v := strings.ToLower(q(r, "IsPlayed")); v == "true" || v == "false" {
+                b := v == "true"
+                qry.Played = &b
+        }
+        if qBool(r, "IsFavorite") {
+                qry.Favorite = true
+        }
+        if v := strings.ToLower(q(r, "IsFolder")); v == "true" || v == "false" {
+                b := v == "true"
+                qry.IsFolder = &b
+        }
+        if v := qInt(r, "MinCommunityRating", 0); v > 0 {
+                qry.MinRating = float64(v)
+        }
+        if f := q(r, "Fields"); f != "" {
+                for _, x := range strings.Split(f, ",") {
+                        qry.Fields = append(qry.Fields, strings.ToLower(strings.TrimSpace(x)))
+                        switch strings.ToLower(strings.TrimSpace(x)) {
+                        case "mediasources", "mediastreams", "overview", "genres", "providerids", "etag", "people", "studios", "path", "alternatemediasources", "primarimageaspectratio":
+                                qry.Detail = true
+                        }
+                }
+        }
+        if qry.Limit <= 0 || qry.Limit > 1000 {
+                qry.Limit = 60
+        }
+        return qry
+}
+
+// normalizeTypes 类型名规范化。
+func normalizeTypes(in []string) []string {
+        var out []string
+        for _, t := range in {
+                switch strings.ToLower(t) {
+                case "movie": out = append(out, "Movie")
+                case "series", "show": out = append(out, "Series")
+                case "season": out = append(out, "Season")
+                case "episode": out = append(out, "Episode")
+                case "folder", "collectionfolder", "foldertype", "userrootfolder", "userview", "collection":
+                        out = append(out, "CollectionFolder")
+                case "person": out = append(out, "Person")
+                case "genre": out = append(out, "Genre")
+                case "boxset": out = append(out, "Movie")
+                }
+        }
+        return out
+}
+
+// queryItems 执行查询，返回条目与总数。
+func (a *App) queryItems(q *itemQuery) ([]models.Item, int) {
+        dbq := a.db.Model(&models.Item{}).Where("type IN ?", []string{"Movie", "Series", "Season", "Episode"})
+
+        // Ids
+        if len(q.ids) > 0 {
+                dbq = dbq.Where("id IN ?", q.ids)
+        }
+        // ParentId 解析
+        if q.ParentID != "" && q.ParentID != "root" && q.ParentID != a.serverID {
+                var lib models.Library
+                if err := a.db.First(&lib, "id = ?", q.ParentID).Error; err == nil {
+                        q.LibID = lib.ID
+                        dbq = dbq.Where("library_id = ?", lib.ID)
+                        if !q.Recursive {
+                                // 非递归：返回库直属内容（Series/Movie）
+                                if lib.Type == "tvshows" {
+                                        dbq = dbq.Where("type = ?", "Series")
+                                } else {
+                                        dbq = dbq.Where("type = ?", "Movie")
+                                }
+                        } else if len(q.IncludeItemTypes) > 0 {
+                                // 递归 + 类型过滤
+                                dbq = dbq.Where("type IN ?", q.IncludeItemTypes)
+                        }
+                } else {
+                        // 是 Series / Season / 其他条目
+                        var parent models.Item
+                        if err := a.db.First(&parent, "id = ?", q.ParentID).Error; err == nil {
+                                switch parent.Type {
+                                case "Series":
+                                        q.SeriesID = parent.ID
+                                        if q.Recursive {
+                                                dbq = dbq.Where("series_id = ?", parent.ID)
+                                                if len(q.IncludeItemTypes) > 0 {
+                                                        dbq = dbq.Where("type IN ?", q.IncludeItemTypes)
+                                                }
+                                        } else {
+                                                dbq = dbq.Where("parent_id = ?", parent.ID).Where("type = ?", "Season")
+                                        }
+                                case "Season":
+                                        q.SeasonID = parent.ID
+                                        dbq = dbq.Where("season_id = ?", parent.ID).Where("type = ?", "Episode")
+                                default:
+                                        dbq = dbq.Where("parent_id = ?", parent.ID)
+                                }
+                        } else {
+                                // 未知 ParentId：空结果
+                                return []models.Item{}, 0
+                        }
+                }
+        } else if q.ParentID == "root" || q.ParentID == a.serverID {
+                // 返回库列表
+                var libs []models.Library
+                a.db.Order("sort_order, created_at").Find(&libs)
+                // 以 CollectionFolder 名义返回，用 Item 类型 hack：转字符串让调用方处理
+                // 这里通过查询标记直接构造（items() 内处理）
+                q.IncludeItemTypes = append(q.IncludeItemTypes, "__libraries__")
+        }
+
+        // 类型过滤（无 ParentId 时）
+        if len(q.IncludeItemTypes) > 0 && q.LibID == "" {
+                dbq = dbq.Where("type IN ?", q.IncludeItemTypes)
+        }
+
+        if q.LibID != "" {
+                dbq = dbq.Where("library_id = ?", q.LibID)
+        }
+        if q.SeriesID != "" {
+                dbq = dbq.Where("series_id = ?", q.SeriesID)
+        }
+        if q.SeasonID != "" {
+                dbq = dbq.Where("season_id = ?", q.SeasonID)
+        }
+        if q.SearchTerm != "" {
+                like := "%" + likeEscape(q.SearchTerm) + "%"
+                dbq = dbq.Where("name LIKE ? ESCAPE '\\'", like)
+        }
+        for _, g := range q.Genres {
+                dbq = dbq.Where("genres LIKE ?", "%\""+likeEscape(g)+"\"%")
+        }
+        if len(q.Years) > 0 {
+                dbq = dbq.Where("year IN ?", q.Years)
+        }
+        if q.MinRating > 0 {
+                dbq = dbq.Where("community_rating >= ?", q.MinRating)
+        }
+        if q.IsFolder != nil {
+                if *q.IsFolder {
+                        dbq = dbq.Where("type IN ?", []string{"Series", "Season"})
+                } else {
+                        dbq = dbq.Where("type IN ?", []string{"Movie", "Episode"})
+                }
+        }
+        // Filters
+        for _, f := range q.Filters {
+                switch {
+                case strings.Contains(f, "isresumable"):
+                        // 继续播放：有进度且未看完
+                        var ids []string
+                        a.db.Model(&models.UserDatum{}).Where("user_id = ? AND position_ticks > 0", q.UserID).Select("item_id").Scan(&ids)
+                        if len(ids) > 0 {
+                                dbq = dbq.Where("id IN ?", ids)
+                        } else {
+                                return []models.Item{}, 0
+                        }
+                case strings.Contains(f, "isplayed"):
+                        ids := a.userPlayedIDs(q.UserID, true)
+                        dbq = dbq.Where("id IN ?", orEmpty(ids))
+                case strings.Contains(f, "isunplayed"):
+                        ids := a.userPlayedIDs(q.UserID, true)
+                        dbq = dbq.Where("id NOT IN ?", orEmpty(ids))
+                }
+        }
+        if q.Played != nil {
+                ids := a.userPlayedIDs(q.UserID, true)
+                if *q.Played {
+                        dbq = dbq.Where("id IN ?", orEmpty(ids))
+                } else {
+                        dbq = dbq.Where("id NOT IN ?", orEmpty(ids))
+                }
+        }
+        if q.Favorite {
+                var ids []string
+                a.db.Model(&models.UserDatum{}).Where("user_id = ? AND favorite = ?", q.UserID, true).Select("item_id").Scan(&ids)
+                dbq = dbq.Where("id IN ?", orEmpty(ids))
+        }
+        // Resume 模式
+        if q.Resume {
+                var ids []string
+                a.db.Model(&models.UserDatum{}).Where("user_id = ? AND position_ticks > 0 AND played = ?", q.UserID, false).Select("item_id").Scan(&ids)
+                dbq = dbq.Where("id IN ?", orEmpty(ids))
+                dbq = dbq.Where("type IN ?", []string{"Movie", "Episode"})
+        }
+
+        // 计数
+        total := 0
+        if q.EnableTotal {
+                var cnt int64
+                dbq.Count(&cnt)
+                total = int(cnt)
+        }
+
+        // 排序
+        orderBy := a.sortClause(q)
+        var items []models.Item
+        dbq = dbq.Order(orderBy)
+        if q.Limit > 0 {
+                dbq = dbq.Limit(q.Limit).Offset(q.StartIndex)
+        }
+        if err := dbq.Find(&items).Error; err != nil {
+                return []models.Item{}, 0
+        }
+        return items, total
+}
+
+func orEmpty(ids []string) []string {
+        if len(ids) == 0 {
+                return []string{""}
+        }
+        return ids
+}
+
+func likeEscape(s string) string {
+        s = strings.ReplaceAll(s, "\\", "\\\\")
+        s = strings.ReplaceAll(s, "%", "\\%")
+        s = strings.ReplaceAll(s, "_", "\\_")
+        return s
+}
+
+// userPlayedIDs 已看条目 ID。
+func (a *App) userPlayedIDs(userID string, played bool) []string {
+        var ids []string
+        a.db.Model(&models.UserDatum{}).Where("user_id = ? AND played = ?", userID, played).Select("item_id").Scan(&ids)
+        return ids
+}
+
+// sortClause 排序子句。
+func (a *App) sortClause(q *itemQuery) string {
+        order := "ASC"
+        if strings.HasPrefix(q.SortOrder, "desc") {
+                order = "DESC"
+        }
+        col := "name"
+        for _, s := range strings.Split(q.SortBy, ",") {
+                s = strings.TrimSpace(s)
+                switch s {
+                case "sortname", "name":
+                        col = "name"
+                case "productionyear", "year":
+                        col = "year"
+                case "datecreated", "dateadded":
+                        col = "date_created"
+                case "premieredate":
+                        col = "year"
+                case "indexnumber":
+                        col = "index_number"
+                case "parentindexnumber", "parentindexnumber,indexnumber":
+                        col = "parent_index_number"
+                case "communityrating", "rating":
+                        col = "community_rating"
+                case "runtime", "runtimeticks":
+                        col = "run_time_ticks"
+                case "random":
+                        col = "RANDOM()"
+                }
+                if col != "" {
+                        break
+                }
+        }
+        // 剧集内按 季/集 排
+        if q.SeriesID != "" || q.SeasonID != "" {
+                return "parent_index_number ASC, index_number ASC, name " + order
+        }
+        if col == "RANDOM()" {
+                return col
+        }
+        return col + " " + order + ", id"
+}
+
+// librariesAsItems 库列表伪装。
+func (a *App) librariesAsItems(libs []models.Library) ([]models.Item, int) {
+        // 由调用方通过 itemsDTO 处理库特殊化；这里返回空集合并用标记
+        return []models.Item{}, len(libs)
+}
+
+// itemsQuery /Items 查询。
+func (a *App) itemsQuery(w http.ResponseWriter, r *http.Request, mode string) {
+        q := a.parseQuery(r, mode)
+        // 特殊：ParentId=root 直接返回库
+        if q.ParentID == "root" || q.ParentID == a.serverID {
+                var libs []models.Library
+                a.db.Order("sort_order, created_at").Find(&libs)
+                items := []M{}
+                for i := range libs {
+                        items = append(items, a.libDTO(&libs[i]))
+                }
+                a.json(w, 200, M{"Items": items, "TotalRecordCount": len(items), "StartIndex": 0})
+                return
+        }
+        items, total := a.queryItems(q)
+        out := []M{}
+        for i := range items {
+                out = append(out, a.itemDTO(&items[i], q.Detail, q.UserID))
+        }
+        a.json(w, 200, M{
+                "Items": out, "TotalRecordCount": total,
+                "StartIndex": q.StartIndex,
+        })
+}
+
+// itemsLatest 最新添加（裸数组）。
+func (a *App) itemsLatest(w http.ResponseWriter, r *http.Request) {
+        q := a.parseQuery(r, "")
+        limit := q.Limit
+        if limit == 60 {
+                limit = qInt(r, "Limit", 16)
+        }
+        var items []models.Item
+        dbq := a.db.Where("type IN ?", []string{"Movie", "Series"}).Order("date_created DESC, id DESC").Limit(limit)
+        if q.ParentID != "" && q.ParentID != "root" {
+                dbq = dbq.Where("library_id = ?", q.ParentID)
+        }
+        dbq.Find(&items)
+        out := []M{}
+        for i := range items {
+                out = append(out, a.itemDTO(&items[i], false, q.UserID))
+        }
+        a.json(w, 200, out)
+}
+
+// itemDetail 单条目详情。
+func (a *App) itemDetail(w http.ResponseWriter, r *http.Request, id string) {
+        id = strings.ToLower(id)
+        if id == "root" {
+                a.userRoot(w, r)
+                return
+        }
+        var it models.Item
+        if err := a.db.First(&it, "id = ?", id).Error; err != nil {
+                a.fail(w, 404, "条目不存在")
+                return
+        }
+        uid := ""
+        if idn := auth.From(r); idn != nil && idn.User != nil {
+                uid = idn.User.ID
+        }
+        a.json(w, 200, a.itemDTO(&it, true, uid))
+}
+
+// itemSimilar 相似条目（同类型同年/同库随机）。
+func (a *App) itemSimilar(w http.ResponseWriter, r *http.Request, id string) {
+        var it models.Item
+        if err := a.db.First(&it, "id = ?", strings.ToLower(id)).Error; err != nil {
+                a.fail(w, 404, "条目不存在")
+                return
+        }
+        var items []models.Item
+        dbq := a.db.Where("type = ? AND id <> ?", it.Type, it.ID).Order("RANDOM()").Limit(12)
+        if it.LibraryID != "" {
+                dbq = dbq.Where("library_id = ?", it.LibraryID)
+        }
+        dbq.Find(&items)
+        out := []M{}
+        for i := range items {
+                out = append(out, a.itemDTO(&items[i], false, ""))
+        }
+        a.json(w, 200, M{"Items": out, "TotalRecordCount": len(out), "StartIndex": 0})
+}
+
+// showSeasons 剧集季列表。
+func (a *App) showSeasons(w http.ResponseWriter, r *http.Request, seriesID string) {
+        var seasons []models.Item
+        a.db.Where("series_id = ? AND type = 'Season'", strings.ToLower(seriesID)).
+                Order("parent_index_number ASC").Find(&seasons)
+        uid := ""
+        if idn := auth.From(r); idn != nil && idn.User != nil {
+                uid = idn.User.ID
+        }
+        out := []M{}
+        for i := range seasons {
+                out = append(out, a.itemDTO(&seasons[i], false, uid))
+        }
+        a.json(w, 200, M{"Items": out, "TotalRecordCount": len(out), "StartIndex": 0})
+}
+
+// showEpisodes 剧集集列表。
+func (a *App) showEpisodes(w http.ResponseWriter, r *http.Request, seriesID string) {
+        seasonID := strings.ToLower(q(r, "SeasonId"))
+        seasonNum := qInt(r, "Season", 0)
+        dbq := a.db.Model(&models.Item{}).Where("series_id = ? AND type = 'Episode'", strings.ToLower(seriesID))
+        if seasonID != "" {
+                dbq = dbq.Where("season_id = ?", seasonID)
+        } else if seasonNum > 0 {
+                dbq = dbq.Where("parent_index_number = ?", seasonNum)
+        }
+        limit := qInt(r, "Limit", 10000)
+        if limit <= 0 || limit > 10000 {
+                limit = 10000
+        }
+        var episodes []models.Item
+        dbq.Order("parent_index_number ASC, index_number ASC").Limit(limit).Offset(qInt(r, "StartIndex", 0)).Find(&episodes)
+        uid := ""
+        if idn := auth.From(r); idn != nil && idn.User != nil {
+                uid = idn.User.ID
+        }
+        out := []M{}
+        for i := range episodes {
+                out = append(out, a.itemDTO(&episodes[i], true, uid))
+        }
+        a.json(w, 200, M{"Items": out, "TotalRecordCount": len(out), "StartIndex": 0})
+}
+
+// persons 人物列表。
+func (a *App) persons(w http.ResponseWriter, r *http.Request) {
+        var items []models.Item
+        a.db.Where("people <> '' AND people IS NOT NULL").Limit(500).Find(&items)
+        seen := map[string]M{}
+        var order []string
+        for i := range items {
+                var people []map[string]string
+                _ = json.Unmarshal([]byte(items[i].People), &people)
+                for _, p := range people {
+                        if p["Name"] == "" {
+                                continue
+                        }
+                        if _, ok := seen[p["Name"]]; !ok {
+                                seen[p["Name"]] = M{
+                                        "Id": personID(p["Name"]), "Name": p["Name"], "Type": "Person",
+                                        "IsFolder": false, "ImageTags": M{}, "BackdropImageTags": []any{},
+                                        "PrimaryImageAspectRatio": 0.6666666666666666,
+                                        "UserData":                M{"Played": false, "IsFavorite": false, "PlaybackPositionTicks": 0},
+                                        "MovieCount":              1,
+                                }
+                                order = append(order, p["Name"])
+                        } else {
+                                m := seen[p["Name"]]
+                                m["MovieCount"] = m["MovieCount"].(int) + 1
+                        }
+                }
+        }
+        limit := qInt(r, "Limit", 60)
+        out := []M{}
+        start := qInt(r, "StartIndex", 0)
+        for i, name := range order {
+                if i < start {
+                        continue
+                }
+                if len(out) >= limit {
+                        break
+                }
+                out = append(out, seen[name])
+        }
+        sort.Slice(out, func(i, j int) bool {
+                return out[i]["Name"].(string) < out[j]["Name"].(string)
+        })
+        a.json(w, 200, M{"Items": out, "TotalRecordCount": len(order), "StartIndex": start})
+}
+
+// personDetail 人物详情与作品。
+func (a *App) personDetail(w http.ResponseWriter, r *http.Request, nameOrID string) {
+        a.json(w, 200, M{
+                "Id": personID(nameOrID), "Name": nameOrID, "Type": "Person",
+                "IsFolder": false, "ImageTags": M{}, "BackdropImageTags": []any{},
+                "UserData": M{"Played": false, "IsFavorite": false, "PlaybackPositionTicks": 0},
+        })
+}
+
+// genres 类型列表。
+func (a *App) genres(w http.ResponseWriter, r *http.Request) {
+        var items []models.Item
+        a.db.Where("genres <> '' AND genres IS NOT NULL AND type IN ?", []string{"Movie", "Series"}).Find(&items)
+        counts := map[string]int{}
+        for i := range items {
+                for _, g := range strSlice(items[i].Genres) {
+                        counts[g]++
+                }
+        }
+        out := []M{}
+        for name, c := range counts {
+                out = append(out, M{
+                        "Id": genreID(name), "Name": name, "Type": "Genre", "IsFolder": true,
+                        "ImageTags": M{}, "BackdropImageTags": []any{},
+                        "UserData": M{"Played": false, "IsFavorite": false, "PlaybackPositionTicks": 0},
+                })
+                _ = c
+        }
+        sort.Slice(out, func(i, j int) bool { return out[i]["Name"].(string) < out[j]["Name"].(string) })
+        a.json(w, 200, M{"Items": out, "TotalRecordCount": len(out), "StartIndex": 0})
+}
+
+// moviesRecommendations 电影推荐。
+func (a *App) moviesRecommendations(w http.ResponseWriter, r *http.Request) {
+        a.json(w, 200, []any{})
+}
+
+// searchHints 搜索建议。
+func (a *App) searchHints(w http.ResponseWriter, r *http.Request) {
+        term := q(r, "SearchTerm")
+        if term == "" {
+                a.json(w, 200, M{"SearchHints": []any{}, "TotalRecordCount": 0})
+                return
+        }
+        qry := &itemQuery{UserID: "", SearchTerm: term, Limit: qInt(r, "Limit", 20), EnableTotal: false}
+        if idn := auth.From(r); idn != nil && idn.User != nil {
+                qry.UserID = idn.User.ID
+        }
+        items, _ := a.queryItems(qry)
+        out := []M{}
+        for i := range items {
+                it := &items[i]
+                out = append(out, M{
+                        "Id": it.ID, "Name": it.Name, "Type": it.Type,
+                        "MediaType": "Video", "ProductionYear": it.Year,
+                        "PrimaryImageTag": itemTag(it),
+                })
+        }
+        a.json(w, 200, M{"SearchHints": out, "TotalRecordCount": len(out)})
+}
+
+// itemRefresh 触发条目刮削。
+func (a *App) itemRefresh(w http.ResponseWriter, r *http.Request, id string) {
+        a.adminGuard(w, r, func() {
+                go func() {
+                        _ = a.scanner.ScrapeNow(strings.ToLower(id))
+                        logxScan("条目刷新完成: %s", id)
+                }()
+                a.noContent(w)
+        })
+}
+
+var _ = time.Now

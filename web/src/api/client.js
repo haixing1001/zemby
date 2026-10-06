@@ -1,0 +1,145 @@
+// Emby API 客户端
+const BASE = '/emby'
+
+export const state = {
+  token: localStorage.getItem('gemby_token') || '',
+  userId: localStorage.getItem('gemby_userId') || '',
+  userName: localStorage.getItem('gemby_userName') || '',
+  isAdmin: localStorage.getItem('gemby_isAdmin') === 'true',
+  serverId: ''
+}
+
+export function saveAuth(login) {
+  state.token = login.AccessToken
+  state.userId = login.User.Id
+  state.userName = login.User.Name
+  state.isAdmin = !!login.User.Policy?.IsAdministrator
+  state.serverId = login.ServerId || ''
+  localStorage.setItem('gemby_token', state.token)
+  localStorage.setItem('gemby_userId', state.userId)
+  localStorage.setItem('gemby_userName', state.userName)
+  localStorage.setItem('gemby_isAdmin', String(state.isAdmin))
+}
+
+export function logout() {
+  state.token = ''
+  localStorage.removeItem('gemby_token')
+  localStorage.removeItem('gemby_userId')
+  localStorage.removeItem('gemby_userName')
+  localStorage.removeItem('gemby_isAdmin')
+}
+
+export function imageUrl(itemId, type = 'Primary', maxWidth = 300) {
+  if (!itemId) return ''
+  const tag = `${state.token ? '' : ''}`
+  return `${BASE}/Items/${itemId}/Images/${type}?MaxWidth=${maxWidth}&api_key=${encodeURIComponent(state.token)}`
+}
+
+async function req(method, path, body, raw = false) {
+  const headers = { 'Content-Type': 'application/json' }
+  if (state.token) headers['X-Emby-Token'] = state.token
+  const sep = path.includes('?') ? '&' : '?'
+  const url = `${BASE}${path}${sep}api_key=${encodeURIComponent(state.token)}`
+  const res = await fetch(url, {
+    method,
+    headers,
+    body: body !== undefined ? JSON.stringify(body) : undefined
+  })
+  if (res.status === 204) return null
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`
+    try {
+      const j = await res.json()
+      msg = j.Message || j.error || msg
+    } catch {}
+    throw new Error(msg)
+  }
+  const ct = res.headers.get('content-type') || ''
+  if (raw || !ct.includes('json')) return res.text()
+  return res.json()
+}
+
+export const api = {
+  get: (p) => req('GET', p),
+  post: (p, b) => req('POST', p, b ?? {}),
+  put: (p, b) => req('PUT', p, b ?? {}),
+  del: (p) => req('DELETE', p),
+
+  // 认证
+  async login(username, password, deviceId) {
+    const headers = { 'Content-Type': 'application/json' }
+    const res = await fetch(`${BASE}/Users/AuthenticateByName`, {
+      method: 'POST',
+      headers: {
+        ...headers,
+        'X-Emby-Authorization': `MediaBrowser Client="Go Emby Web", Device="Web Browser", DeviceId="${deviceId}", Version="1.0"`
+      },
+      body: JSON.stringify({ Username: username, Pw: password })
+    })
+    if (!res.ok) {
+      let msg = '登录失败'
+      try { const j = await res.json(); msg = j.Message || msg } catch {}
+      throw new Error(msg)
+    }
+    return res.json()
+  },
+
+  // 条目
+  views: (userId) => api.get(`/Users/${userId}/Views`),
+  items: (params) => {
+    const q = new URLSearchParams()
+    Object.entries(params).forEach(([k, v]) => {
+      if (v !== undefined && v !== null && v !== '') q.set(k, v)
+    })
+    return api.get(`/Items?${q.toString()}`)
+  },
+  item: (id) => api.get(`/Items/${id}`),
+  seasons: (seriesId) => api.get(`/Shows/${seriesId}/Seasons`),
+  episodes: (seriesId, seasonId) => api.get(`/Shows/${seriesId}/Episodes?SeasonId=${seasonId}`),
+  playbackInfo: (id) => api.post(`/Items/${id}/PlaybackInfo`, {}),
+  resume: () => api.get(`/Items/Resume?Limit=20`),
+  latest: () => api.get(`/Items/Latest?Limit=16`),
+
+  // 播放上报
+  playingStart: (itemId, srcId) => api.post('/Sessions/Playing', { ItemId: itemId, MediaSourceId: srcId }),
+  playingProgress: (itemId, pos, rt, srcId, paused) =>
+    api.post('/Sessions/Playing/Progress', { ItemId: itemId, MediaSourceId: srcId, PositionTicks: Math.floor(pos), RunTimeTicks: rt, IsPaused: paused }),
+  playingStopped: (itemId, pos, rt, srcId) =>
+    api.post('/Sessions/Playing/Stopped', { ItemId: itemId, MediaSourceId: srcId, PositionTicks: Math.floor(pos), RunTimeTicks: rt }),
+  markPlayed: (userId, itemId) => api.post(`/Users/${userId}/PlayedItems/${itemId}`),
+  markFavorite: (userId, itemId) => api.post(`/Users/${userId}/FavoriteItems/${itemId}`),
+
+  // 管理
+  admin: {
+    status: () => api.get('/admin/status'),
+    libraries: () => api.get('/admin/libraries'),
+    createLibrary: (body) => api.post('/admin/libraries', body),
+    deleteLibrary: (id) => api.del(`/admin/libraries/${id}`),
+    scan: (id, mode) => api.post('/admin/scan', { ID: id, Mode: mode }),
+    scanAll: (mode) => api.post('/admin/scan', { Mode: mode }),
+    tmdb: () => api.get('/admin/tmdb'),
+    saveTmdb: (body) => api.put('/admin/tmdb', body),
+    users: () => api.get('/Users'),
+    createUser: (body) => api.post('/Users', body),
+    updateUser: (id, body) => api.put(`/Users/${id}`, body),
+    deleteUser: (id) => api.del(`/Users/${id}`),
+    files: (path) => api.get(`/admin/files?path=${encodeURIComponent(path || '')}`),
+    fileOp: (Action, Path, Arg) => api.post('/admin/files/op', { Action, Path, Arg }),
+    uploadUrl: (path) => `${BASE}/admin/files/upload?path=${encodeURIComponent(path)}&api_key=${encodeURIComponent(state.token)}`
+  },
+
+  streamUrl(itemId, srcId, container) {
+    return `${BASE}/Videos/${itemId}/stream.${container || 'mp4'}?Static=true&MediaSourceId=${srcId}&api_key=${encodeURIComponent(state.token)}`
+  },
+
+  subtitleUrl(itemId, index) {
+    return `${BASE}/Videos/${itemId}/subtitles/${index}/stream.vtt?api_key=${encodeURIComponent(state.token)}`
+  }
+}
+
+// 随机设备 ID（每浏览器固定）
+const didKey = 'gemby_device_id'
+if (!localStorage.getItem(didKey)) {
+  localStorage.setItem(didKey, 'web-' + Math.random().toString(36).slice(2, 12))
+}
+export const deviceId = localStorage.getItem(didKey)

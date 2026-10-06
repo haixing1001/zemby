@@ -1,0 +1,16 @@
+services:
+  go-emby:
+    image: ghcr.io/example/go-emby:latest   # 替换为你的镜像
+    container_name: go-emby
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8097:8097"        # Web / API 端口
+    environment:
+      - GEMBY_SERVER_NAME=Go Emby Server
+      - GEMBY_ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin123}   # 首次启动创建的管理员密码
+      - MEDIA_ROOTS=/media                                 # 容器内允许访问的媒体根目录
+      - TZ=Asia/Shanghai
+    volumes:
+      - ./config:/config      # 数据库、刮削元数据
+      - ${MEDIA_PATH:-./media}:/media   # 媒体文件目录（按需修改左侧宿主机路径）
