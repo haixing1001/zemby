@@ -266,6 +266,10 @@ table.tbl { width: 100%; border-collapse: collapse; }
 .adm-sub:hover { background: #181d25; color: var(--text); }
 .adm-sub.active { color: #5b9bff; }
 .adm-sub.disabled { color: #4d5560; cursor: not-allowed; }
+.adm-item .aux-arrow { margin-left: auto; color: #6b7482; font-size: 13px; line-height: 1; transition: transform .15s; }
+.adm-item .aux-arrow.open { transform: rotate(180deg); }
+.adm-item.aux-on { color: #5b9bff; }
+.adm-item.aux-on .aux-arrow { color: #5b9bff; }
 .adm-version { padding: 12px; color: #566070; font-size: 12px; display: flex; align-items: center; gap: 8px; }
 .adm-topbar { display: none; }
 @media (max-width: 900px) {

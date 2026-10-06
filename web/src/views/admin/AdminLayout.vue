@@ -37,14 +37,19 @@
           <span class="ico" v-html="icons.logs"></span>日志管理
         </router-link>
 
-        <div class="adm-group-title">辅助功能</div>
-        <router-link to="/admin/settings" class="adm-sub" active-class="active">增强功能</router-link>
-        <router-link to="/admin/subtitles" class="adm-sub" active-class="active">字幕</router-link>
-        <router-link to="/admin/tmdb" class="adm-sub" active-class="active">TMDB</router-link>
-        <router-link to="/admin/ai" class="adm-sub" active-class="active">AI识别</router-link>
-        <div class="adm-sub disabled" title="开发中">Bot</div>
-        <div class="adm-sub disabled" title="开发中">片头片尾</div>
-        <div class="adm-sub disabled" title="开发中">代理</div>
+        <div class="adm-item" :class="{ 'aux-on': auxActive }" @click="auxOpen = !auxOpen">
+          <span class="ico" v-html="icons.aux"></span>辅助功能
+          <span class="aux-arrow" :class="{ open: auxOpen }">⌄</span>
+        </div>
+        <template v-if="auxOpen">
+          <router-link to="/admin/settings" class="adm-sub" active-class="active" @click="sideOpen = false">增强功能</router-link>
+          <router-link to="/admin/subtitles" class="adm-sub" active-class="active" @click="sideOpen = false">字幕</router-link>
+          <router-link to="/admin/tmdb" class="adm-sub" active-class="active" @click="sideOpen = false">TMDB</router-link>
+          <router-link to="/admin/ai" class="adm-sub" active-class="active" @click="sideOpen = false">AI识别</router-link>
+          <div class="adm-sub disabled" title="开发中">Bot</div>
+          <div class="adm-sub disabled" title="开发中">片头片尾</div>
+          <div class="adm-sub disabled" title="开发中">代理</div>
+        </template>
 
         <router-link to="/admin/api" class="adm-item" active-class="active" @click="sideOpen = false">
           <span class="ico" v-html="icons.api"></span>API
@@ -67,11 +72,20 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import { api } from '../../api/client'
 
+const route = useRoute()
 const sideOpen = ref(false)
+const auxOpen = ref(true)
 const version = ref('zemby')
+
+const AUX_PATHS = ['/admin/settings', '/admin/subtitles', '/admin/tmdb', '/admin/ai']
+const auxActive = computed(() => AUX_PATHS.some(p => route.path === p || route.path.startsWith(p + '/')))
+watch(() => route.path, p => {
+  if (AUX_PATHS.some(x => p === x || p.startsWith(x + '/'))) auxOpen.value = true
+})
 
 onMounted(async () => {
   try {
@@ -90,6 +104,7 @@ const icons = {
   sort: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h10M4 18h6"/></svg>',
   info: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8v.01"/></svg>',
   logs: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h6"/></svg>',
+  aux: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h8M18 6h2M4 12h2M12 12h8M4 18h8M18 18h2"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="15" cy="18" r="2"/></svg>',
   api: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6l-6 6 6 6M16 6l6 6-6 6"/></svg>'
 }
 </script>
