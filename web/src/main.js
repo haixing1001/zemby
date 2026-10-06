@@ -19,6 +19,7 @@ import MediaInfo from './views/admin/MediaInfo.vue'
 import Settings from './views/admin/Settings.vue'
 import Subtitles from './views/admin/Subtitles.vue'
 import Tmdb from './views/admin/Tmdb.vue'
+import AiRecognize from './views/admin/AiRecognize.vue'
 import ApiDocs from './views/admin/ApiDocs.vue'
 import LogManage from './views/admin/LogManage.vue'
 
@@ -43,6 +44,7 @@ const router = createRouter({
         { path: 'settings', component: Settings },
         { path: 'subtitles', component: Subtitles },
         { path: 'tmdb', component: Tmdb },
+        { path: 'ai', component: AiRecognize },
         { path: 'api', component: ApiDocs }
       ]
     }

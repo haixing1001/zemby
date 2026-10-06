@@ -33,6 +33,7 @@ const (
         CatScan     = "scan"     // 扫描媒体
         CatScrape   = "scrape"   // 刮削
         CatTMDB     = "tmdb"     // TMDB
+        CatAI       = "ai"       // AI 识别辅助
         CatProbe    = "probe"    // 媒体信息提取
         CatSubtitle = "subtitle" // 字幕
         CatPlayback = "playback" // 用户播放

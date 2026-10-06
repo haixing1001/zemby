@@ -142,6 +142,10 @@ func (a *App) adminRoute(w http.ResponseWriter, r *http.Request, p string, parts
                 // ---- TMDB 设置 ----
                 case p == "/admin/tmdb":
                         a.adminTMDB(w, r)
+                case p == "/admin/ai":
+                        a.adminAI(w, r)
+                case p == "/admin/ai/test":
+                        a.adminAITest(w, r)
                 case p == "/admin/scrape":
                         a.adminScrape(w, r)
 

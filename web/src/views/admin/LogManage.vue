@@ -45,6 +45,7 @@ const CATS = [
   { key: '', name: '全部' },
   { key: 'subtitle', name: '字幕' },
   { key: 'tmdb', name: 'TMDB' },
+  { key: 'ai', name: 'AI识别' },
   { key: 'scrape', name: '刮削' },
   { key: 'scan', name: '扫描媒体' },
   { key: 'probe', name: '媒体信息提取' },
@@ -53,7 +54,7 @@ const CATS = [
   { key: 'error', name: '错误日志' },
 ]
 
-const CAT_NAMES = { system: '系统', scan: '扫描媒体', scrape: '刮削', tmdb: 'TMDB', probe: '媒体信息提取', subtitle: '字幕', playback: '用户播放', redirect: '302日志' }
+const CAT_NAMES = { system: '系统', scan: '扫描媒体', scrape: '刮削', tmdb: 'TMDB', ai: 'AI识别', probe: '媒体信息提取', subtitle: '字幕', playback: '用户播放', redirect: '302日志' }
 
 const cats = CATS
 const current = ref('')

@@ -37,19 +37,14 @@
           <span class="ico" v-html="icons.logs"></span>日志管理
         </router-link>
 
-        <div class="adm-group-title">增强功能</div>
-        <div class="adm-sub" style="display:flex;align-items:center;" @click="enhOpen = !enhOpen">
-          <span style="flex:1;">设置 · 字幕 · TMDB · 更多</span>
-          <span :class="{ open: enhOpen }" style="color:#6b7482;">⌄</span>
-        </div>
-        <template v-if="enhOpen">
-          <router-link to="/admin/settings" class="adm-sub" active-class="active">增强功能</router-link>
-          <router-link to="/admin/subtitles" class="adm-sub" active-class="active">字幕</router-link>
-          <router-link to="/admin/tmdb" class="adm-sub" active-class="active">TMDB</router-link>
-          <div class="adm-sub disabled" title="开发中">Bot</div>
-          <div class="adm-sub disabled" title="开发中">片头片尾</div>
-          <div class="adm-sub disabled" title="开发中">代理</div>
-        </template>
+        <div class="adm-group-title">辅助功能</div>
+        <router-link to="/admin/settings" class="adm-sub" active-class="active">增强功能</router-link>
+        <router-link to="/admin/subtitles" class="adm-sub" active-class="active">字幕</router-link>
+        <router-link to="/admin/tmdb" class="adm-sub" active-class="active">TMDB</router-link>
+        <router-link to="/admin/ai" class="adm-sub" active-class="active">AI识别</router-link>
+        <div class="adm-sub disabled" title="开发中">Bot</div>
+        <div class="adm-sub disabled" title="开发中">片头片尾</div>
+        <div class="adm-sub disabled" title="开发中">代理</div>
 
         <router-link to="/admin/api" class="adm-item" active-class="active" @click="sideOpen = false">
           <span class="ico" v-html="icons.api"></span>API
@@ -76,7 +71,6 @@ import { ref, onMounted } from 'vue'
 import { api } from '../../api/client'
 
 const sideOpen = ref(false)
-const enhOpen = ref(true)
 const version = ref('zemby')
 
 onMounted(async () => {

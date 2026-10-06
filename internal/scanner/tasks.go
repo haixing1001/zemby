@@ -237,6 +237,18 @@ func (s *Scanner) scrapeMovie(ctx context.Context, item *models.Item, set tmdb.S
                         }
                 }
                 if len(results) == 0 {
+                        // AI 识别辅助：从文件路径提取关键词后重试搜索
+                        if aiTitle, aiYear, ok := s.aiRetrySearch(ctx, "Movie", item.Path, item.Name, item.Year); ok {
+                                results, err = tmdb.SearchMovie(ctx, set.APIKey, aiTitle, set.Language, aiYear)
+                                if err == nil && len(results) == 0 && aiYear > 0 {
+                                        results, err = tmdb.SearchMovie(ctx, set.APIKey, aiTitle, set.Language, 0)
+                                }
+                                if err != nil {
+                                        return err
+                                }
+                        }
+                }
+                if len(results) == 0 {
                         logx.InfoC(logx.CatTMDB, "TMDB 未找到电影: %s (%d)", title, year)
                         return fmt.Errorf("TMDB 未找到匹配: %s (%d)", title, year)
                 }
@@ -352,6 +364,18 @@ func (s *Scanner) scrapeSeries(ctx context.Context, item *models.Item, set tmdb.
                         results, err = tmdb.SearchTV(ctx, set.APIKey, title, set.Language, 0)
                         if err != nil {
                                 return err
+                        }
+                }
+                if len(results) == 0 {
+                        // AI 识别辅助：从文件路径提取关键词后重试搜索
+                        if aiTitle, aiYear, ok := s.aiRetrySearch(ctx, "Series", item.Path, item.Name, item.Year); ok {
+                                results, err = tmdb.SearchTV(ctx, set.APIKey, aiTitle, set.Language, aiYear)
+                                if err == nil && len(results) == 0 && aiYear > 0 {
+                                        results, err = tmdb.SearchTV(ctx, set.APIKey, aiTitle, set.Language, 0)
+                                }
+                                if err != nil {
+                                        return err
+                                }
                         }
                 }
                 if len(results) == 0 {
