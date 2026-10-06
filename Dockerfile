@@ -6,7 +6,8 @@ COPY web/package.json web/package-lock.json* ./
 RUN npm config set registry https://registry.npmmirror.com && \
     (npm ci --no-audit --no-fund 2>/dev/null || npm install --no-audit --no-fund)
 COPY web/ ./
-RUN npm run build
+# 显式指定输出目录，不依赖 vite.config 的 outDir（其默认写到 workdir 之外的 ../internal/api/dist）
+RUN npm run build -- --outDir /build/dist --emptyOutDir
 
 # 2. 后端构建（纯静态，CGO_ENABLED=0 支持多架构交叉编译）
 FROM --platform=$BUILDPLATFORM golang:1.23-alpine AS go-builder

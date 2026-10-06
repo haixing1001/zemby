@@ -1,8 +1,7 @@
 services:
-  go-emby:
-    image: ghcr.io/example/go-emby:latest   # 替换为你的镜像
-    container_name: go-emby
-    build: .
+  zemby:
+    image: ghcr.io/haixing1001/zemby:latest
+    container_name: zemby
     restart: unless-stopped
     ports:
       - "8097:8097"        # Web / API 端口
