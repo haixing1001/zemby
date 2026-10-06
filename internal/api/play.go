@@ -111,6 +111,7 @@ func (a *App) videoStream(w http.ResponseWriter, r *http.Request, id string) {
 
         // 远程流：302 重定向直连
         if strings.HasPrefix(src.Path, "http://") || strings.HasPrefix(src.Path, "https://") {
+                logx.DetailC(logx.CatRedirect, "info", src.Path+" · "+clientInfo, "302 重定向直连《%s》", it.Name)
                 w.Header().Set("Location", src.Path)
                 w.WriteHeader(http.StatusFound)
                 return

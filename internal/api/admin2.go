@@ -237,13 +237,13 @@ func (a *App) adminLibraryPatch(w http.ResponseWriter, r *http.Request, id strin
                         }
                 }
                 lib.Path = lib.Path + ";" + p
-                logx.Info("媒体库「%s」新增目录 %s", lib.Name, p)
+                logx.InfoC(logx.CatScan, "媒体库「%s」新增目录 %s", lib.Name, p)
         }
         if err := a.db.Save(&lib).Error; err != nil {
                 a.fail(w, 500, "保存失败")
                 return
         }
-        logx.Info("媒体库「%s」设置已更新", lib.Name)
+        logx.InfoC(logx.CatScan, "媒体库「%s」设置已更新", lib.Name)
         a.json(w, 200, M{"OK": true})
 }
 
@@ -389,7 +389,7 @@ func (a *App) adminScrapeConfig(w http.ResponseWriter, r *http.Request) {
         }
         scanner.SaveScrapeConfig(body)
         a.scanner.SetRealtime(body.Realtime)
-        logx.Info("刮削配置已更新（开启=%v 实时监控=%v 自动刷新=%v 策略=%s）",
+        logx.InfoC(logx.CatScrape, "刮削配置已更新（开启=%v 实时监控=%v 自动刷新=%v 策略=%s）",
                 body.Enabled, body.Realtime, body.AutoRefre, body.Overwrite)
         a.json(w, 200, M{"OK": true})
 }
@@ -421,11 +421,11 @@ func (a *App) adminScrapeControl(w http.ResponseWriter, r *http.Request) {
                         }
                         scanner.SetScrapeState("running")
                 }()
-                logx.Scan("手动刮削：已触发全部媒体库增量扫描")
+                logx.InfoC(logx.CatScrape, "手动刮削：已触发全部媒体库增量扫描")
                 a.json(w, 200, M{"OK": true, "State": "running"})
         case "start":
                 n := a.scanner.EnqueueAllUnscraped()
-                logx.Scan("手动刮削任务开始：%d 个条目待刮削", n)
+                logx.InfoC(logx.CatScrape, "手动刮削任务开始：%d 个条目待刮削", n)
                 a.json(w, 200, M{"OK": true, "State": "running", "Queued": n})
         case "pause":
                 scanner.SetScrapeState("paused")
@@ -433,7 +433,7 @@ func (a *App) adminScrapeControl(w http.ResponseWriter, r *http.Request) {
         case "stop":
                 scanner.SetScrapeState("idle")
                 n := a.scanner.DrainScrape()
-                logx.Scan("刮削任务已停止，丢弃 %d 个排队任务", n)
+                logx.InfoC(logx.CatScrape, "刮削任务已停止，丢弃 %d 个排队任务", n)
                 a.json(w, 200, M{"OK": true, "State": "idle"})
         default:
                 a.fail(w, 400, "未知操作")
@@ -448,7 +448,7 @@ func (a *App) adminScrapeFailed(w http.ResponseWriter, r *http.Request) {
 // adminScrapeRetry 重试失败项。
 func (a *App) adminScrapeRetry(w http.ResponseWriter, r *http.Request) {
         n := a.scanner.RetryFailedScrape()
-        logx.Scan("重试失败刮削：%d 个条目入队", n)
+        logx.InfoC(logx.CatScrape, "重试失败刮削：%d 个条目入队", n)
         a.json(w, 200, M{"OK": true, "Queued": n})
 }
 
@@ -473,7 +473,7 @@ func (a *App) adminProbeConfig(w http.ResponseWriter, r *http.Request) {
         }
         scanner.SaveProbeConfig(body)
         a.scanner.SetProbeConcurrency(body.Concurrency)
-        logx.Info("媒体信息提取配置已更新（并发=%d）", body.Concurrency)
+        logx.InfoC(logx.CatProbe, "媒体信息提取配置已更新（并发=%d）", body.Concurrency)
         a.json(w, 200, M{"OK": true})
 }
 

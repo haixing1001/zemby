@@ -220,6 +220,7 @@ type ScanTask struct {
 type LogEntry struct {
         Seq       int64     `json:"id"`
         Level     string    `json:"level"` // info|warn|error|scan|playback
+        Category  string    `json:"category,omitempty"` // system|scan|scrape|tmdb|probe|subtitle|playback|redirect
         Message   string    `json:"message"`
         Detail    string    `json:"detail,omitempty"`
         Time      time.Time `json:"time"`

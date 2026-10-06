@@ -34,7 +34,7 @@ func (s *Scanner) doProbe(t probeTask) {
                         return
                 }
                 probeFailed.Add(1)
-                logx.Warn("ffprobe 失败 %s: %v", filepath.Base(t.path), err)
+                logx.WarnC(logx.CatProbe, "ffprobe 失败 %s: %v", filepath.Base(t.path), err)
                 return
         }
         // 替换内嵌流（保留外挂字幕）
@@ -58,7 +58,7 @@ func (s *Scanner) doProbe(t probeTask) {
                 db.DB.Model(&it).Update("image_rev", imageRev(it.Poster, it.Backdrop, it.Thumb, it.Logo))
         }
         probeDone.Add(1)
-        logx.Detail("scan", fmt.Sprintf("%d 轨道", len(streams)), "媒体信息提取完成 %s", filepath.Base(t.path))
+        logx.DetailC(logx.CatProbe, "info", fmt.Sprintf("%d 轨道", len(streams)), "媒体信息提取完成 %s", filepath.Base(t.path))
 }
 
 // enqueueProbe 加入探测队列（计数等待数）。
@@ -67,7 +67,7 @@ func (s *Scanner) enqueueProbe(item *models.Item, src models.MediaSource, mtime 
         case s.probeQueue <- probeTask{sourceID: src.ID, itemID: item.ID, path: src.Path, mtime: mtime}:
                 probeWaiting.Add(1)
         default:
-                logx.Warn("探测队列已满，跳过 %s", src.Path)
+                logx.WarnC(logx.CatProbe, "探测队列已满，跳过 %s", src.Path)
         }
 }
 
@@ -94,7 +94,7 @@ func (s *Scanner) scrapeWorker() {
                 cancel()
                 if err != nil {
                         db.DB.Model(&models.Item{}).Where("id = ?", t.itemID).Update("scrape_error", truncateErr(err.Error()))
-                        logx.Warn("刮削失败 item=%s: %v", t.itemID, err)
+                        logx.WarnC(logx.CatScrape, "刮削失败 item=%s: %v", t.itemID, err)
                 } else {
                         db.DB.Model(&models.Item{}).Where("id = ? AND scrape_error != ''", t.itemID).Update("scrape_error", "")
                 }
@@ -163,7 +163,7 @@ func (s *Scanner) scrapeMovie(ctx context.Context, item *models.Item, set tmdb.S
                         }
                 }
                 if len(results) == 0 {
-                        logx.Scan("TMDB 未找到电影: %s (%d)", title, year)
+                        logx.InfoC(logx.CatTMDB, "TMDB 未找到电影: %s (%d)", title, year)
                         return fmt.Errorf("TMDB 未找到匹配: %s (%d)", title, year)
                 }
                 best := results[0]
@@ -185,7 +185,7 @@ func (s *Scanner) scrapeMovie(ctx context.Context, item *models.Item, set tmdb.S
         if err := db.DB.Save(item).Error; err != nil {
                 return err
         }
-        logx.Scan("刮削电影《%s》(%d) 完成", item.Name, item.Year)
+        logx.InfoC(logx.CatScrape, "刮削电影《%s》(%d) 完成", item.Name, item.Year)
         return nil
 }
 
@@ -281,7 +281,7 @@ func (s *Scanner) scrapeSeries(ctx context.Context, item *models.Item, set tmdb.
                         }
                 }
                 if len(results) == 0 {
-                        logx.Scan("TMDB 未找到剧集: %s", title)
+                        logx.InfoC(logx.CatTMDB, "TMDB 未找到剧集: %s", title)
                         return fmt.Errorf("TMDB 未找到匹配: %s", title)
                 }
                 best := results[0]
@@ -338,7 +338,7 @@ func (s *Scanner) scrapeSeries(ctx context.Context, item *models.Item, set tmdb.
         if err := db.DB.Save(item).Error; err != nil {
                 return err
         }
-        logx.Scan("刮削剧集《%s》完成（共 %d 季）", item.Name, detail.NumberOfSeasons)
+        logx.InfoC(logx.CatScrape, "刮削剧集《%s》完成（共 %d 季）", item.Name, detail.NumberOfSeasons)
 
         // 刮削各季与各集
         s.scrapeSeasons(ctx, item, set, detail.ID)
@@ -353,7 +353,7 @@ func (s *Scanner) scrapeSeasons(ctx context.Context, series *models.Item, set tm
         for _, season := range seasons {
                 resp, err := tmdb.GetSeason(ctx, set.APIKey, tvID, season.ParentIndexNumber, set.Language)
                 if err != nil {
-                        logx.Warn("获取季详情失败 %s S%d: %v", series.Name, season.ParentIndexNumber, err)
+                        logx.WarnC(logx.CatScrape, "获取季详情失败 %s S%d: %v", series.Name, season.ParentIndexNumber, err)
                         continue
                 }
                 season.Name = resp.Name

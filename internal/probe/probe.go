@@ -293,4 +293,4 @@ func RunTimeTicks(r *Result) int64 {
 }
 
 // LogScan 记录 probe 日志。
-func LogScan(path string) { logx.Scan("ffprobe 分析 %s", path) }
+func LogScan(path string) { logx.InfoC(logx.CatProbe, "ffprobe 分析 %s", path) }

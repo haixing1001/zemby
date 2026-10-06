@@ -143,6 +143,15 @@ export const api = {
     apiKeys: () => api.get('/admin/apikeys'),
     createApiKey: (Name) => api.post('/admin/apikeys', { Name }),
     deleteApiKey: (id) => api.del(`/admin/apikeys/${id}`),
+    logs: (category, level, limit) => {
+      const qp = new URLSearchParams()
+      if (category) qp.set('category', category)
+      if (level) qp.set('level', level)
+      qp.set('limit', String(limit || 500))
+      return api.get(`/admin/logs?${qp.toString()}`)
+    },
+    clearLogs: () => api.del('/admin/logs'),
+    logsStreamUrl: () => `${BASE}/admin/logs/stream?api_key=${encodeURIComponent(state.token)}`,
     users: () => api.get('/Users'),
     createUser: (body) => api.post('/Users', body),
     updateUser: (id, body) => api.put(`/Users/${id}`, body),

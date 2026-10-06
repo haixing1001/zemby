@@ -33,7 +33,7 @@ func (a *App) libraryRefresh(w http.ResponseWriter, r *http.Request) {
                                 _ = a.scanner.ScanLibrary(libs[i].ID, "update")
                         }
                 }()
-                logx.Info("已请求全库刷新")
+                logx.InfoC(logx.CatScan, "已请求全库刷新")
                 a.noContent(w)
         })
 }
@@ -242,7 +242,7 @@ func (a *App) adminLibraryCreate(w http.ResponseWriter, r *http.Request) {
                 a.fail(w, 500, "创建失败")
                 return
         }
-        logx.Info("创建媒体库「%s」(%s, %s)", lib.Name, lib.Type, lib.Path)
+        logx.InfoC(logx.CatScan, "创建媒体库「%s」(%s, %s)", lib.Name, lib.Type, lib.Path)
         // 自动触发首次扫描
         _ = a.scanner.ScanLibrary(lib.ID, "full")
         a.json(w, 200, M{"ID": lib.ID, "Name": lib.Name})
@@ -265,7 +265,7 @@ func (a *App) adminLibraryDelete(w http.ResponseWriter, r *http.Request, id stri
         }
         a.db.Where("library_id = ?", lib.ID).Delete(&models.Item{})
         a.db.Delete(&lib)
-        logx.Info("删除媒体库「%s」", lib.Name)
+        logx.InfoC(logx.CatScan, "删除媒体库「%s」", lib.Name)
         a.noContent(w)
 }
 
@@ -353,7 +353,7 @@ func (a *App) adminTMDB(w http.ResponseWriter, r *http.Request) {
                 a.fail(w, 500, "保存失败")
                 return
         }
-        logx.Info("TMDB 刮削设置已更新（语言=%s）", set.Language)
+        logx.InfoC(logx.CatTMDB, "TMDB 刮削设置已更新（语言=%s）", set.Language)
         a.json(w, 200, M{"OK": true})
 }
 
@@ -369,7 +369,7 @@ func (a *App) adminScrape(w http.ResponseWriter, r *http.Request) {
         }
         go func() {
                 if err := a.scanner.ScrapeNow(strings.ToLower(body.ItemID)); err != nil {
-                        logx.Warn("手动刮削失败: %v", err)
+                        logx.WarnC(logx.CatScrape, "手动刮削失败: %v", err)
                 }
         }()
         a.json(w, 200, M{"OK": true, "Message": "刮削任务已开始"})
@@ -397,15 +397,27 @@ func (a *App) adminStatus(w http.ResponseWriter, r *http.Request) {
         })
 }
 
-// adminLogs 日志查询。
+// adminLogs 日志查询（支持分类/级别过滤，返回分类计数）。
 func (a *App) adminLogs(w http.ResponseWriter, r *http.Request) {
         if r.Method == http.MethodDelete {
                 logx.Clear()
+                logx.Info("日志已清空")
                 a.noContent(w)
                 return
         }
-        n := qInt(r, "limit", 200)
-        a.json(w, 200, M{"Entries": logxSnapshot(n)})
+        n := qInt(r, "limit", 500)
+        if n <= 0 || n > 2000 {
+                n = 2000
+        }
+        cat := q(r, "category")
+        level := q(r, "level")
+        if cat == "error" { // 兼容：错误日志作为特殊分类
+                level = "error"
+                cat = ""
+        }
+        entries := logx.SnapshotFiltered(cat, level, n)
+        counts := logx.Counts()
+        a.json(w, 200, M{"Entries": entries, "Counts": counts, "Total": len(entries)})
 }
 
 var _ = auth.ClientIP
@@ -421,6 +433,6 @@ func (a *App) adminScanStop(w http.ResponseWriter, r *http.Request) {
                         n++
                 }
         }
-        logx.Info("已请求停止 %d 个扫描任务", n)
+        logx.InfoC(logx.CatScan, "已请求停止 %d 个扫描任务", n)
         a.json(w, 200, M{"OK": true, "Stopped": n})
 }

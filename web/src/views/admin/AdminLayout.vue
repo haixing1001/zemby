@@ -33,6 +33,9 @@
         <router-link to="/admin/media-info" class="adm-item" active-class="active" @click="sideOpen = false">
           <span class="ico" v-html="icons.info"></span>媒体信息
         </router-link>
+        <router-link to="/admin/logs" class="adm-item" active-class="active" @click="sideOpen = false">
+          <span class="ico" v-html="icons.logs"></span>日志管理
+        </router-link>
 
         <div class="adm-group-title">增强功能</div>
         <div class="adm-sub" style="display:flex;align-items:center;" @click="enhOpen = !enhOpen">
@@ -92,6 +95,7 @@ const icons = {
   users: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.2 3.4-5 6.5-5s5.7 1.8 6.5 5"/><circle cx="17" cy="9" r="2.5"/><path d="M16 15.2c2.6.3 4.6 1.8 5.4 4.3"/></svg>',
   sort: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h10M4 18h6"/></svg>',
   info: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8v.01"/></svg>',
+  logs: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h6"/></svg>',
   api: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6l-6 6 6 6M16 6l6 6-6 6"/></svg>'
 }
 </script>

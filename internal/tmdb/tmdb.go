@@ -268,7 +268,7 @@ func DownloadImage(metaDir, itemID string, size, path string) (string, error) {
         if err := os.WriteFile(local, data, 0o644); err != nil {
                 return "", err
         }
-        logx.Detail("info", u, "已下载 TMDB 图片 %s", filepath.Base(local))
+        logx.DetailC(logx.CatTMDB, "info", u, "已下载 TMDB 图片 %s", filepath.Base(local))
         return local, nil
 }
 

@@ -11,6 +11,7 @@ import (
         "time"
 
         "go-emby/internal/db"
+        "go-emby/internal/logx"
         "go-emby/internal/models"
         "go-emby/internal/nfo"
 )
@@ -292,6 +293,9 @@ func (s *Scanner) applySubtitles(item *models.Item, src models.MediaSource, vide
                 }
                 db.DB.Create(&st)
         }
+        if len(subs) > 0 {
+                logx.InfoC(logx.CatSubtitle, "《%s》匹配到 %d 个外挂字幕", item.Name, len(subs))
+        }
 }
 
 // posterNames 常见海报文件名。
@@ -372,14 +376,14 @@ var _ = fmt.Sprintf
 
 // refreshLight 未变化文件的轻量刷新（字幕与本地图片）。
 func (s *Scanner) refreshLight(item *models.Item, vf videoFile) {
-	var src models.MediaSource
-	if err := db.DB.Where("item_id = ?", item.ID).First(&src).Error; err != nil {
-		return
-	}
-	s.applySubtitles(item, src, vf.path)
-	if item.Type == "Movie" {
-		s.applyLocalImages(item, filepath.Dir(vf.path), strings.TrimSuffix(filepath.Base(vf.path), filepath.Ext(vf.path)))
-	} else if item.Type == "Episode" {
-		s.applyLocalImages(item, filepath.Dir(vf.path), strings.TrimSuffix(filepath.Base(vf.path), filepath.Ext(vf.path)))
-	}
+        var src models.MediaSource
+        if err := db.DB.Where("item_id = ?", item.ID).First(&src).Error; err != nil {
+                return
+        }
+        s.applySubtitles(item, src, vf.path)
+        if item.Type == "Movie" {
+                s.applyLocalImages(item, filepath.Dir(vf.path), strings.TrimSuffix(filepath.Base(vf.path), filepath.Ext(vf.path)))
+        } else if item.Type == "Episode" {
+                s.applyLocalImages(item, filepath.Dir(vf.path), strings.TrimSuffix(filepath.Base(vf.path), filepath.Ext(vf.path)))
+        }
 }

@@ -20,6 +20,7 @@ import Settings from './views/admin/Settings.vue'
 import Subtitles from './views/admin/Subtitles.vue'
 import Tmdb from './views/admin/Tmdb.vue'
 import ApiDocs from './views/admin/ApiDocs.vue'
+import LogManage from './views/admin/LogManage.vue'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -38,6 +39,7 @@ const router = createRouter({
         { path: 'users', component: UserManage },
         { path: 'sort', component: MediaSort },
         { path: 'media-info', component: MediaInfo },
+        { path: 'logs', component: LogManage },
         { path: 'settings', component: Settings },
         { path: 'subtitles', component: Subtitles },
         { path: 'tmdb', component: Tmdb },

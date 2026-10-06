@@ -138,7 +138,7 @@ func (s *Scanner) runScan(lib *models.Library, mode string) {
                         continue
                 }
                 if _, err := os.Stat(root); err != nil {
-                        logx.Warn("媒体目录不可访问: %s", root)
+                        logx.WarnC(logx.CatScan, "媒体目录不可访问: %s", root)
                         continue
                 }
                 if lib.Type == "tvshows" {
@@ -147,7 +147,7 @@ func (s *Scanner) runScan(lib *models.Library, mode string) {
                         s.scanMoviesDir(lib, root, full, seen, &counters)
                 }
                 if s.stopped(lib.ID) {
-                        logx.Warn("媒体库「%s」扫描被手动停止", lib.Name)
+                        logx.WarnC(logx.CatScan, "媒体库「%s」扫描被手动停止", lib.Name)
                         break
                 }
         }
@@ -213,7 +213,7 @@ func (s *Scanner) scanMoviesDir(lib *models.Library, root string, full bool, see
                         }
                 }
                 if err := s.upsertMovie(lib, vf); err != nil {
-                        logx.Warn("处理失败 %s: %v", vf.path, err)
+                        logx.WarnC(logx.CatScan, "处理失败 %s: %v", vf.path, err)
                         continue
                 }
                 cnt.updated++
@@ -360,7 +360,7 @@ func (s *Scanner) upsertSeries(lib *models.Library, seriesDir string, files []vi
                         }
                 }
                 if ep == 0 {
-                        logx.Warn("无法识别集号，按补充内容跳过: %s", filepath.Base(vf.path))
+                        logx.WarnC(logx.CatScan, "无法识别集号，按补充内容跳过: %s", filepath.Base(vf.path))
                         continue
                 }
                 episodes = append(episodes, epInfo{vf, season, ep})

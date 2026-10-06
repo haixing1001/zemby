@@ -258,7 +258,7 @@ func (s *Scanner) syncProbePool(n int) {
         for i := 0; i < n; i++ {
                 go s.probeWorkerPooled(ctx)
         }
-        logx.Info("媒体信息提取并发调整为 %d", n)
+        logx.InfoC(logx.CatProbe, "媒体信息提取并发调整为 %d", n)
 }
 
 // SetProbeConcurrency 更新并发配置并重建线程池。
@@ -328,7 +328,7 @@ func (s *Scanner) BatchProbeStart() (int, error) {
         batchRunning.Store(true)
         batchStop.Store(false)
         if n > 0 {
-                logx.Info("批量提取媒体信息：%d 个条目入队", n)
+                logx.InfoC(logx.CatProbe, "批量提取媒体信息：%d 个条目入队", n)
         }
         return n, nil
 }
@@ -411,7 +411,7 @@ func (s *Scanner) SetRealtime(on bool) {
                         }
                 }
         }()
-        logx.Info("实时监控已开启：每 2 分钟增量扫描")
+        logx.InfoC(logx.CatScan, "实时监控已开启：每 2 分钟增量扫描")
 }
 
 // ============================================================
