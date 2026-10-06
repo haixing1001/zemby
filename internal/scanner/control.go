@@ -450,6 +450,10 @@ func (s *Scanner) TryProbeOnBrowse(itemID string) {
         if cnt > 0 {
                 return
         }
+        // 剧集媒体信息复用：同季已有提取结果则直接复制，不入队
+        if s.tryReuseOnBrowse(&it) {
+                return
+        }
         probeDedupMu.Lock()
         probeDedup[itemID] = true
         probeDedupMu.Unlock()

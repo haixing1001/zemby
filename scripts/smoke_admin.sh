@@ -52,7 +52,8 @@ SCN=$(curl -s -X PUT $B/admin/scrape/config -H "$AH" -H "Content-Type: applicati
 check "刮削配置保存" "$SCN" '"OK"'
 ST=$(curl -s $B/admin/scrape/state -H "$AH")
 check "刮削状态" "$ST" '"State"'
-# 未配置 TMDB Key → 应产生失败记录
+# 未配置 TMDB Key → 开启「启动TMDB」开关后应产生失败记录；开关关闭时静默跳过
+curl -s -X PUT $B/admin/enhancements -H "$AH" -H "Content-Type: application/json" -d '{"TMDB":true}' >/dev/null
 CT=$(curl -s -X POST $B/admin/scrape/control -H "$AH" -H "Content-Type: application/json" -d '{"Action":"start"}')
 check "刮削开始" "$CT" '"Queued"'
 sleep 3
@@ -64,6 +65,8 @@ PA=$(curl -s -X POST $B/admin/scrape/control -H "$AH" -H "Content-Type: applicat
 check "刮削暂停" "$PA" '"paused"'
 SO=$(curl -s -X POST $B/admin/scrape/control -H "$AH" -H "Content-Type: application/json" -d '{"Action":"stop"}')
 check "刮削停止" "$SO" '"idle"'
+# 恢复 TMDB 开关默认关闭
+curl -s -X PUT $B/admin/enhancements -H "$AH" -H "Content-Type: application/json" -d '{"TMDB":false}' >/dev/null
 
 echo "== 媒体信息提取 =="
 PC=$(curl -s $B/admin/probe/config -H "$AH")

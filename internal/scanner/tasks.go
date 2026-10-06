@@ -59,6 +59,74 @@ func (s *Scanner) doProbe(t probeTask) {
         }
         probeDone.Add(1)
         logx.DetailC(logx.CatProbe, "info", fmt.Sprintf("%d 轨道", len(streams)), "媒体信息提取完成 %s", filepath.Base(t.path))
+        // 剧集媒体信息复用：同季缺失的集复制本次提取结果
+        if LoadEnhanceConfig().EpisodeMediaReuse {
+                s.reuseSeasonStreams(t.itemID)
+        }
+}
+
+// reuseSeasonStreams 将 src 集的内嵌流信息复制到同季其它缺失的集。
+func (s *Scanner) reuseSeasonStreams(srcItemID string) {
+        var src models.Item
+        if db.DB.First(&src, "id = ?", srcItemID).Error != nil || src.Type != "Episode" || src.SeriesID == "" || src.ParentIndexNumber <= 0 {
+                return
+        }
+        if n := s.copySeasonMedia(&src); n > 0 {
+                logx.InfoC(logx.CatProbe, "剧集媒体信息复用：《%s》第 %d 季复制到 %d 集", src.SeriesName, src.ParentIndexNumber, n)
+        }
+}
+
+// copySeasonMedia 复制同季流信息，返回复制条数。
+func (s *Scanner) copySeasonMedia(src *models.Item) int {
+        var sibs []models.Item
+        db.DB.Where("series_id = ? AND parent_index_number = ? AND type = 'Episode' AND id <> ?",
+                src.SeriesID, src.ParentIndexNumber, src.ID).Find(&sibs)
+        n := 0
+        for i := range sibs {
+                sib := &sibs[i]
+                var cnt int64
+                db.DB.Model(&models.MediaStream{}).Where("item_id = ? AND is_external = ?", sib.ID, false).Count(&cnt)
+                if cnt > 0 {
+                        continue // 已有自己的内嵌流
+                }
+                var sibSrc models.MediaSource
+                if db.DB.Where("item_id = ?", sib.ID).Order("\"default\" DESC").First(&sibSrc).Error != nil {
+                        continue // 无媒体源无法挂载流信息
+                }
+                var streams []models.MediaStream
+                db.DB.Where("item_id = ? AND is_external = ?", src.ID, false).Find(&streams)
+                if len(streams) == 0 {
+                        continue
+                }
+                for _, st := range streams {
+                        st.ID = 0
+                        st.ItemID = sib.ID
+                        st.SourceID = sibSrc.ID
+                        db.DB.Create(&st)
+                }
+                n++
+        }
+        return n
+}
+
+// tryReuseOnBrowse 浏览时尝试同季复用（命中返回 true，无需再探测）。
+func (s *Scanner) tryReuseOnBrowse(item *models.Item) bool {
+        if !LoadEnhanceConfig().EpisodeMediaReuse || item.Type != "Episode" || item.SeriesID == "" || item.ParentIndexNumber <= 0 {
+                return false
+        }
+        // 同季是否存在已提取的兄弟集
+        var cnt int64
+        db.DB.Raw(`SELECT COUNT(1) FROM items i INNER JOIN media_streams ms ON ms.item_id = i.id AND ms.is_external = ?
+                WHERE i.series_id = ? AND i.parent_index_number = ? AND i.type = 'Episode' AND i.id <> ?`,
+                false, item.SeriesID, item.ParentIndexNumber, item.ID).Scan(&cnt)
+        if cnt == 0 {
+                return false
+        }
+        if s.copySeasonMedia(item) > 0 {
+                logx.InfoC(logx.CatProbe, "剧集媒体信息复用：《%s》第 %d 季（浏览时命中）", item.SeriesName, item.ParentIndexNumber)
+                return true
+        }
+        return false
 }
 
 // enqueueProbe 加入探测队列（计数等待数）。
@@ -88,6 +156,9 @@ func (s *Scanner) scrapeWorker() {
                 cfg := LoadScrapeConfig()
                 if !cfg.Enabled {
                         continue // 刮削总开关关闭：丢弃任务
+                }
+                if !LoadEnhanceConfig().TMDB {
+                        continue // 增强功能「启动TMDB」关闭：静默跳过（开启后可重新批量刮削）
                 }
                 ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
                 err := s.scrapeItem(ctx, t.itemID)
@@ -119,6 +190,9 @@ func (s *Scanner) ScrapeNow(itemID string) error {
 // scrapeItem 刮削单个条目。
 func (s *Scanner) scrapeItem(ctx context.Context, itemID string) error {
         set := tmdb.LoadSettings()
+        if !LoadEnhanceConfig().TMDB {
+                return fmt.Errorf("TMDB 未开启（设置-增强功能-启动TMDB）")
+        }
         if set.APIKey == "" {
                 return fmt.Errorf("未配置 TMDB API Key")
         }

@@ -60,6 +60,8 @@ func New(cfg *config.Config) *Scanner {
         if LoadScrapeConfig().Realtime {
                 s.SetRealtime(true)
         }
+        // 恢复增强功能运行时状态（文件监听）+ 首字母检索存量回填
+        s.initEnhance()
         return s
 }
 

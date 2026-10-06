@@ -5,11 +5,13 @@ import (
         "encoding/json"
         "net/http"
         "sort"
+        "strconv"
         "strings"
         "time"
 
         "go-emby/internal/auth"
         "go-emby/internal/models"
+        "go-emby/internal/scanner"
 )
 
 // itemQuery 查询参数。
@@ -168,8 +170,12 @@ func (a *App) queryItems(q *itemQuery) ([]models.Item, int) {
         if len(q.ids) > 0 {
                 dbq = dbq.Where("id IN ?", q.ids)
         }
-        // ParentId 解析
-        if q.ParentID != "" && q.ParentID != "root" && q.ParentID != a.serverID {
+        // 收藏虚拟库：按当前用户收藏过滤（电影+剧集）
+        if q.ParentID == favLibID {
+                q.Favorite = true
+                q.Recursive = true
+                dbq = dbq.Where("type IN ?", []string{"Movie", "Series"})
+        } else if q.ParentID != "" && q.ParentID != "root" && q.ParentID != a.serverID {
                 var lib models.Library
                 if err := a.db.First(&lib, "id = ?", q.ParentID).Error; err == nil {
                         q.LibID = lib.ID
@@ -236,7 +242,13 @@ func (a *App) queryItems(q *itemQuery) ([]models.Item, int) {
         }
         if q.SearchTerm != "" {
                 like := "%" + likeEscape(q.SearchTerm) + "%"
-                dbq = dbq.Where("name LIKE ? ESCAPE '\\'", like)
+                if scanner.LoadEnhanceConfig().SearchByInitials && isInitialsQuery(q.SearchTerm) {
+                        // 首字母搜索：中文名按拼音首字母前缀匹配，同时保留原名包含匹配
+                        dbq = dbq.Where("name LIKE ? ESCAPE '\\' OR initials LIKE ? ESCAPE '\\'",
+                                like, likeEscape(strings.ToLower(q.SearchTerm))+"%")
+                } else {
+                        dbq = dbq.Where("name LIKE ? ESCAPE '\\'", like)
+                }
         }
         for _, g := range q.Genres {
                 dbq = dbq.Where("genres LIKE ?", "%\""+likeEscape(g)+"\"%")
@@ -305,8 +317,27 @@ func (a *App) queryItems(q *itemQuery) ([]models.Item, int) {
 
         // 排序
         orderBy := a.sortClause(q)
-        var items []models.Item
         dbq = dbq.Order(orderBy)
+
+        // 多版本合并：开启开关时全量取回内存分组后分页（仅影响电影）
+        if a.mergeEnabledFor(q) {
+                var all []models.Item
+                if err := dbq.Limit(20000).Find(&all).Error; err != nil {
+                        return []models.Item{}, 0
+                }
+                merged, total := a.groupVersions(all)
+                start := q.StartIndex
+                if start > len(merged) {
+                        start = len(merged)
+                }
+                end := len(merged)
+                if q.Limit > 0 && start+q.Limit < end {
+                        end = start + q.Limit
+                }
+                return merged[start:end], total
+        }
+
+        var items []models.Item
         if q.Limit > 0 {
                 dbq = dbq.Limit(q.Limit).Offset(q.StartIndex)
         }
@@ -314,6 +345,110 @@ func (a *App) queryItems(q *itemQuery) ([]models.Item, int) {
                 return []models.Item{}, 0
         }
         return items, total
+}
+
+// isInitialsQuery 是否为纯字母/数字搜索词（首字母匹配模式）。
+func isInitialsQuery(s string) bool {
+        if s == "" {
+                return false
+        }
+        for _, ch := range s {
+                if !(ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9') {
+                        return false
+                }
+        }
+        return true
+}
+
+// mergeEnabledFor 当前查询是否需要多版本合并分组。
+func (a *App) mergeEnabledFor(q *itemQuery) bool {
+        enh := scanner.LoadEnhanceConfig()
+        if !enh.MergeVersionsInLibrary && !enh.MergeVersionsAcrossLibraries {
+                return false
+        }
+        // 仅电影参与分组；类型过滤排除电影时不启用
+        if len(q.IncludeItemTypes) > 0 {
+                ok := false
+                for _, t := range q.IncludeItemTypes {
+                        if t == "Movie" {
+                                ok = true
+                        }
+                }
+                if !ok {
+                        return false
+                }
+        }
+        return true
+}
+
+// movieVersionKey 电影版本分组键（同名同年归并，刮削后名称一致天然同键）。
+func movieVersionKey(it *models.Item) string {
+        n := strings.ToLower(strings.TrimSpace(it.Name))
+        if n == "" {
+                return ""
+        }
+        return n + "|" + strconv.Itoa(it.Year)
+}
+
+// groupVersions 查询结果内存分组：每组保留排序首位作代表，总数按分组后计。
+func (a *App) groupVersions(all []models.Item) ([]models.Item, int) {
+        enh := scanner.LoadEnhanceConfig()
+        across := enh.MergeVersionsAcrossLibraries
+        seen := map[string]bool{}
+        out := make([]models.Item, 0, len(all))
+        for i := range all {
+                it := &all[i]
+                key := ""
+                if it.Type == "Movie" {
+                        key = movieVersionKey(it)
+                        if key != "" && !across {
+                                key = it.LibraryID + "|" + key
+                        }
+                }
+                if key == "" {
+                        out = append(out, *it)
+                        continue
+                }
+                if seen[key] {
+                        continue // 后续版本不输出（由 DTO 聚合 MediaSources）
+                }
+                seen[key] = true
+                out = append(out, *it)
+        }
+        return out, len(out)
+}
+
+// versionMembers 同身份的其它电影条目（跨库或库内，按开关）。
+func (a *App) versionMembers(it *models.Item) []models.Item {
+        enh := scanner.LoadEnhanceConfig()
+        if it.Type != "Movie" || (!enh.MergeVersionsInLibrary && !enh.MergeVersionsAcrossLibraries) {
+                return nil
+        }
+        name := strings.ToLower(strings.TrimSpace(it.Name))
+        if name == "" {
+                return nil
+        }
+        q := a.db.Where("type = 'Movie' AND id <> ? AND lower(trim(name)) = ? AND year = ?",
+                it.ID, name, it.Year)
+        if !enh.MergeVersionsAcrossLibraries {
+                q = q.Where("library_id = ?", it.LibraryID)
+        }
+        var out []models.Item
+        q.Order("date_created").Limit(100).Find(&out)
+        return out
+}
+
+// mergedSources 条目媒体源（多版本合并开启且 detail 时聚合同身份成员的源）。
+func (a *App) mergedSources(it *models.Item, detail bool) []M {
+        base := a.sources(it, detail)
+        if !detail {
+                return base
+        }
+        members := a.versionMembers(it)
+        for i := range members {
+                base = append(base, a.sources(&members[i], detail)...)
+        }
+        return base
 }
 
 func orEmpty(ids []string) []string {
@@ -354,7 +489,7 @@ func (a *App) sortClause(q *itemQuery) string {
                 case "datecreated", "dateadded":
                         col = "date_created"
                 case "premieredate":
-                        col = "year"
+                        col = "premiere_date"
                 case "indexnumber":
                         col = "index_number"
                 case "parentindexnumber", "parentindexnumber,indexnumber":
@@ -376,6 +511,10 @@ func (a *App) sortClause(q *itemQuery) string {
         }
         if col == "RANDOM()" {
                 return col
+        }
+        if col == "premiere_date" {
+                // 无发行日期的内容排在最后（升序/降序一致）
+                return "(CASE WHEN premiere_date IS NULL THEN 1 ELSE 0 END) ASC, premiere_date " + order + ", id"
         }
         return col + " " + order + ", id"
 }

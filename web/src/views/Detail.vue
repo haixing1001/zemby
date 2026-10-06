@@ -30,6 +30,21 @@
       </div>
     </div>
 
+    <!-- 演职人员 -->
+    <div v-if="people.length" class="section">
+      <h2>演职人员</h2>
+      <div class="cast-row">
+        <div v-for="p in people" :key="p.Id" class="cast-card">
+          <div class="cast-avatar">
+            <img v-if="p.Thumb" :src="p.Thumb" loading="lazy" @error="onCastImgError" />
+            <span v-else>{{ (p.Name || '?')[0] }}</span>
+          </div>
+          <div class="cast-name">{{ p.Name }}</div>
+          <div class="cast-role">{{ p.Role || (p.Type === 'Director' ? '导演' : '') }}</div>
+        </div>
+      </div>
+    </div>
+
     <!-- 剧集：季与集 -->
     <div v-if="item.Type === 'Series'" class="section">
       <div class="season-tabs">
@@ -70,6 +85,8 @@ const currentSeason = ref('')
 const episodeCount = ref(0)
 
 const genres = computed(() => item.value.Genres || [])
+const people = computed(() => item.value.People || [])
+function onCastImgError(ev) { ev.target.style.display = 'none' }
 const runtimeText = computed(() => fmtRuntime(item.value.RunTimeTicks))
 const resumePct = computed(() => {
   const rt = item.value.RunTimeTicks || 0

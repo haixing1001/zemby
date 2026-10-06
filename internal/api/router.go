@@ -165,6 +165,10 @@ func (a *App) serveAuthed(w http.ResponseWriter, r *http.Request, p string) {
         case p == "/users/me":
                 a.userMe(w, r)
 
+        // 收藏 / 已看 / 评分（须在 users/{uid} 通用路由之前分发）
+        case len(parts) == 4 && parts[0] == "users" && (parts[2] == "favoriteitems" || parts[2] == "playeditems" || parts[2] == "rating" || parts[2] == "userdata"):
+                a.userDataRoute(w, r, parts)
+
         // Users
         case parts[0] == "users" && len(parts) == 1:
                 a.usersList(w, r)
@@ -207,10 +211,6 @@ func (a *App) serveAuthed(w http.ResponseWriter, r *http.Request, p string) {
         case parts[0] == "shows" && len(parts) >= 2:
                 // 其余 shows 子路径退化为 ParentId 查询
                 a.itemsQuery(w, r, "")
-
-        // 收藏 / 已看 / 评分
-        case len(parts) == 4 && parts[0] == "users" && (parts[2] == "favoriteitems" || parts[2] == "playeditems" || parts[2] == "rating" || parts[2] == "userdata"):
-                a.userDataRoute(w, r, parts)
 
         // Library
         case p == "/library/mediafolders" || p == "/library/virtualfolders":

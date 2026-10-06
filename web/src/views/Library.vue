@@ -6,6 +6,7 @@
       <input v-model="search" placeholder="搜索…" style="width: 200px;" @input="debouncedLoad" />
       <select v-model="sortBy" @change="load">
         <option value="SortName">名称</option>
+        <option value="PremiereDate">发行日期</option>
         <option value="DateCreated">添加时间</option>
         <option value="ProductionYear">年份</option>
         <option value="CommunityRating">评分</option>
@@ -24,6 +25,7 @@
           <img v-if="imgOk(it)" :src="posterUrl(it, 300)" @error="fail(it)" loading="lazy" />
           <div v-else class="placeholder">{{ initial(it) }}</div>
           <span v-if="it.CommunityRating" class="badge">★ {{ it.CommunityRating.toFixed(1) }}</span>
+          <span v-if="it.Type === 'Series' && it.RecursiveItemCount" class="badge-eps">{{ it.RecursiveItemCount }} 集</span>
         </div>
         <div class="title">{{ it.Name }}</div>
         <div class="meta">{{ it.ProductionYear || '' }}{{ it.Type === 'Series' ? ' · 剧集' : '' }}</div>
@@ -55,6 +57,7 @@ const sortBy = ref('SortName')
 const sortOrder = ref('Ascending')
 const broken = ref(new Set())
 const startIndex = ref(0)
+const libDefaultSort = ref(false)
 
 function posterUrl(it, w) { return imageUrl(it.Id, 'Primary', w) }
 function imgOk(it) { return !broken.value.has(it.Id) }
@@ -73,8 +76,16 @@ async function load(append = false) {
         const lib = (v.Items || []).find(x => x.Id === libId)
         if (lib && lib.DefaultSort) {
           const [k, o] = String(lib.DefaultSort).split('|')
-          if (k) sortBy.value = k
+          if (k) { sortBy.value = k; libDefaultSort.value = true }
           if (o) sortOrder.value = o
+        }
+      } catch {}
+      // 增强功能：按发行日期排序媒体库（无库级默认排序时生效，从新到旧）
+      try {
+        const e = await api.admin.enhancements()
+        if (e.SortByReleaseDate && !libDefaultSort.value) {
+          sortBy.value = 'PremiereDate'
+          sortOrder.value = 'Descending'
         }
       } catch {}
     }

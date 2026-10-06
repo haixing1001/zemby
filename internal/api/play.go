@@ -7,11 +7,13 @@ import (
         "os"
         "path/filepath"
         "strings"
+        "sync"
         "time"
 
         "go-emby/internal/auth"
         "go-emby/internal/logx"
         "go-emby/internal/models"
+        "go-emby/internal/scanner"
 )
 
 // reserve 设备占用检查（租约 180s）。
@@ -60,7 +62,7 @@ func (a *App) playbackInfo(w http.ResponseWriter, r *http.Request, id string) {
         }
         playSession := longHash(it.ID + time.Now().String())
         a.json(w, 200, M{
-                "MediaSources":  a.sources(&it, true),
+                "MediaSources":  a.mergedSources(&it, true),
                 "PlaySessionId": playSession,
                 "ErrorCode":     "None",
         })
@@ -82,6 +84,18 @@ func (a *App) videoStream(w http.ResponseWriter, r *http.Request, id string) {
         srcID := strings.ToLower(q(r, "MediaSourceId"))
         if srcID != "" {
                 if err := a.db.Where("item_id = ? AND id = ?", it.ID, srcID).First(&src).Error; err != nil {
+                        // 多版本合并：源可能属于同身份的其它条目
+                        var alt models.MediaSource
+                        if err2 := a.db.First(&alt, "id = ?", srcID).Error; err2 == nil && alt.ItemID != it.ID {
+                                var owner models.Item
+                                if err3 := a.db.First(&owner, "id = ?", alt.ItemID).Error; err3 == nil &&
+                                        owner.Type == "Movie" && owner.Year == it.Year &&
+                                        strings.EqualFold(strings.TrimSpace(owner.Name), strings.TrimSpace(it.Name)) {
+                                        src = alt
+                                }
+                        }
+                }
+                if src.ID == "" {
                         a.fail(w, 404, "媒体源不存在")
                         return
                 }
@@ -111,8 +125,14 @@ func (a *App) videoStream(w http.ResponseWriter, r *http.Request, id string) {
 
         // 远程流：302 重定向直连
         if strings.HasPrefix(src.Path, "http://") || strings.HasPrefix(src.Path, "https://") {
-                logx.DetailC(logx.CatRedirect, "info", src.Path+" · "+clientInfo, "302 重定向直连《%s》", it.Name)
-                w.Header().Set("Location", src.Path)
+                target := src.Path
+                if cfg := scanner.LoadEnhanceConfig(); cfg.FastPath {
+                        // 快速路径：限时解析最终直链，失败回退原始地址（不改变普通播放）
+                        target = a.resolveFast(src.Path, cfg.FastPathWaitSec)
+                }
+                logx.DetailC(logx.CatRedirect, "info", target+" · "+clientInfo, "302 重定向直连《%s》", it.Name)
+                w.Header().Set("Location", target)
+                w.Header().Set("Cache-Control", "no-store")
                 w.WriteHeader(http.StatusFound)
                 return
         }
@@ -138,6 +158,77 @@ func (a *App) videoStream(w http.ResponseWriter, r *http.Request, id string) {
         w.Header().Set("Access-Control-Allow-Origin", "*")
         // http.ServeContent 处理 Range/If-Range
         http.ServeContent(w, r, name, fi.ModTime(), f)
+}
+
+// fastLink 快速路径解析缓存条目。
+type fastLink struct {
+        location string
+        until    time.Time
+}
+
+var fastCache = struct {
+        sync.Mutex
+        m map[string]fastLink
+}{m: map[string]fastLink{}}
+
+// resolveFast 快速路径：限时探测 STRM 地址可达性并跟随重定向取最终直链；
+// 超时/失败回退原始地址，结果缓存 5 秒。
+func (a *App) resolveFast(raw string, waitSec int) string {
+        fastCache.Lock()
+        hit, ok := fastCache.m[raw]
+        fastCache.Unlock()
+        if ok && time.Now().Before(hit.until) {
+                return hit.location
+        }
+        loc := raw
+        reachable := false
+        client := &http.Client{Timeout: time.Duration(waitSec) * time.Second}
+        do := func(method string) (string, bool) {
+                req, err := http.NewRequest(method, raw, nil)
+                if err != nil {
+                        return "", false
+                }
+                req.Header.Set("User-Agent", "zemby/fastpath")
+                if method == http.MethodGet {
+                        req.Header.Set("Range", "bytes=0-0")
+                }
+                resp, err := client.Do(req)
+                if err != nil {
+                        return "", false
+                }
+                defer resp.Body.Close()
+                if resp.StatusCode >= 400 {
+                        return "", false
+                }
+                if resp.Request != nil && resp.Request.URL != nil {
+                        return resp.Request.URL.String(), true
+                }
+                return "", false
+        }
+        if l, ok := do(http.MethodHead); ok {
+                loc, reachable = l, true
+        } else if l, ok := do(http.MethodGet); ok {
+                loc, reachable = l, true
+        }
+        if reachable {
+                if loc != raw {
+                        logx.InfoC(logx.CatRedirect, "快速路径解析成功（限时 %d 秒）", waitSec)
+                } else {
+                        logx.InfoC(logx.CatRedirect, "快速路径可达（限时 %d 秒），无重定向直连", waitSec)
+                }
+        } else {
+                logx.InfoC(logx.CatRedirect, "快速路径解析失败，回退原始 STRM 地址")
+        }
+        fastCache.Lock()
+        if len(fastCache.m) >= 512 {
+                for k := range fastCache.m {
+                        delete(fastCache.m, k)
+                        break
+                }
+        }
+        fastCache.m[raw] = fastLink{loc, time.Now().Add(5 * time.Second)}
+        fastCache.Unlock()
+        return loc
 }
 
 // subtitleStream 外挂字幕流：/videos/{id}/subtitles/{index}/stream.{fmt}

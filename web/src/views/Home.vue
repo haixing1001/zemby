@@ -42,7 +42,7 @@
             <div class="placeholder" style="font-size: 22px;">{{ v.Name }}</div>
           </div>
           <div class="title">{{ v.Name }}</div>
-          <div class="meta">{{ v.CollectionType === 'tvshows' ? '剧集' : '电影' }}</div>
+          <div class="meta">{{ viewKind(v) }}</div>
         </div>
       </div>
     </div>
@@ -75,6 +75,12 @@ function open(it) {
 }
 function play(it) {
   router.push('/play/' + it.Id)
+}
+function viewKind(v) {
+  if (v.CollectionType === 'favorites') return '收藏'
+  if (v.CollectionType === 'tvshows') return '剧集'
+  if (v.CollectionType === 'movies') return '电影'
+  return '媒体库'
 }
 
 onMounted(async () => {

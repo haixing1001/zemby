@@ -43,7 +43,7 @@
           <span :class="{ open: enhOpen }" style="color:#6b7482;">⌄</span>
         </div>
         <template v-if="enhOpen">
-          <router-link to="/admin/settings" class="adm-sub" active-class="active">设置</router-link>
+          <router-link to="/admin/settings" class="adm-sub" active-class="active">增强功能</router-link>
           <router-link to="/admin/subtitles" class="adm-sub" active-class="active">字幕</router-link>
           <router-link to="/admin/tmdb" class="adm-sub" active-class="active">TMDB</router-link>
           <div class="adm-sub disabled" title="开发中">Bot</div>

@@ -12,6 +12,7 @@ import (
         "go-emby/internal/db"
         "go-emby/internal/logx"
         "go-emby/internal/models"
+        "go-emby/internal/scanner"
 )
 
 // userDTO 用户 DTO（客户端强依赖，数组不可为 null）。
@@ -283,7 +284,24 @@ func (a *App) userViews(w http.ResponseWriter, r *http.Request, uid string) {
         for i := range libs {
                 items = append(items, a.libDTO(&libs[i]))
         }
+        // 增强功能：收藏虚拟库（在「我的媒体库」显示播放收藏）
+        if scanner.LoadEnhanceConfig().Favorites {
+                items = append(items, a.favLibDTO())
+        }
         a.json(w, 200, M{"Items": items, "TotalRecordCount": len(items), "StartIndex": 0})
+}
+
+// favLibDTO 收藏虚拟库 DTO。
+func (a *App) favLibDTO() M {
+        d := a.libDTO(&models.Library{ID: favLibID, Name: "收藏", Type: ""})
+        d["LocationType"] = "Virtual"
+        d["CollectionType"] = "favorites"
+        if fileExists(a.favCoverPath()) {
+                d["ImageTags"] = M{"Primary": "fav"}
+        } else {
+                d["ImageTags"] = M{}
+        }
+        return d
 }
 
 // userRoot 根目录。

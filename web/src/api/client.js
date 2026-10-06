@@ -137,6 +137,16 @@ export const api = {
     probeBatch: (action) => api.post('/admin/probe/batch', { Action: action }),
     settings: () => api.get('/admin/settings'),
     saveSettings: (b) => api.put('/admin/settings', b),
+    enhancements: () => api.get('/admin/enhancements'),
+    saveEnhancements: (b) => api.put('/admin/enhancements', b),
+    uploadFavoriteCover: (file) => {
+      const fd = new FormData()
+      fd.append('file', file)
+      return fetch(`${BASE}/admin/favorites/cover?api_key=${encodeURIComponent(state.token)}`, {
+        method: 'POST', body: fd
+      }).then(r => { if (!r.ok) throw new Error('上传失败') ; return r.json() })
+    },
+    deleteFavoriteCover: () => api.del('/admin/favorites/cover'),
     changePassword: (b) => api.put('/admin/password', b),
     subtitles: () => api.get('/admin/subtitles'),
     apiDocs: () => api.get('/admin/api'),

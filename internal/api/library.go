@@ -101,6 +101,10 @@ func (a *App) adminRoute(w http.ResponseWriter, r *http.Request, p string, parts
                         a.adminProbeBatch(w, r)
                 case p == "/admin/settings":
                         a.adminSettings(w, r)
+                case p == "/admin/enhancements":
+                        a.adminEnhance(w, r)
+                case p == "/admin/favorites/cover":
+                        a.adminFavCover(w, r)
                 case p == "/admin/password":
                         a.adminPassword(w, r)
                 case p == "/admin/subtitles":

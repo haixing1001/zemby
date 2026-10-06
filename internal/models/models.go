@@ -5,7 +5,11 @@ import (
         "crypto/rand"
         "crypto/sha256"
         "encoding/hex"
+        "strings"
         "time"
+
+        "github.com/mozillazg/go-pinyin"
+        "gorm.io/gorm"
 )
 
 func randHex(n int) string {
@@ -93,6 +97,7 @@ type Item struct {
         ProviderIDs      string    `gorm:"size:512" json:"-"` // JSON {Tmdb,Imdb}
         RunTimeTicks     int64     `json:"runTimeTicks,omitempty"`
         Path             string    `gorm:"index;size:768" json:"-"` // 文件或目录
+        Initials         string    `gorm:"index;size:512" json:"-"` // 拼音首字母检索串（小写）
         Container        string    `gorm:"size:32" json:"-"`
         Size             int64     `json:"-"`
         Mtime            int64     `json:"-"` // 增量扫描用：文件修改时间戳
@@ -224,6 +229,35 @@ type LogEntry struct {
         Message   string    `json:"message"`
         Detail    string    `json:"detail,omitempty"`
         Time      time.Time `json:"time"`
+}
+
+// pyArgs 拼音首字母参数。
+var pyArgs = pinyin.NewArgs()
+
+// InitialsOf 生成检索串：汉字转拼音首字母，字母/数字保留小写原样，其余字符忽略。
+// 例：《满江红》→ "mjh"；"Top Gun 2024" → "topgun2024"。
+func InitialsOf(name string) string {
+        var b strings.Builder
+        for _, ch := range name {
+                switch {
+                case ch >= 'a' && ch <= 'z', ch >= '0' && ch <= '9':
+                        b.WriteRune(ch)
+                case ch >= 'A' && ch <= 'Z':
+                        b.WriteRune(ch + ('a' - 'A'))
+                case ch >= 0x3400 && ch <= 0x9fff: // CJK 统一表意文字
+                        vals := pinyin.SinglePinyin(ch, pyArgs)
+                        if len(vals) > 0 && vals[0] != "" {
+                                b.WriteByte(vals[0][0])
+                        }
+                }
+        }
+        return b.String()
+}
+
+// BeforeSave GORM 钩子：任何保存都同步刷新首字母检索串。
+func (i *Item) BeforeSave(tx *gorm.DB) error {
+        i.Initials = InitialsOf(i.Name)
+        return nil
 }
 
 func init() {}
