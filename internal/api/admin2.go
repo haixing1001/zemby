@@ -598,6 +598,7 @@ func (a *App) adminAPIList(w http.ResponseWriter, r *http.Request) {
                 {"系统", "GET", "/emby/System/Info/Public", "公开服务器信息（免鉴权）"},
                 {"系统", "GET", "/emby/System/Ping", "心跳"},
                 {"认证", "POST", "/emby/Users/AuthenticateByName", "用户名密码登录，返回 AccessToken"},
+                {"认证", "GET", "/emby/*?api_key=<密钥>", "后台「API 管理」签发的密钥，等同管理员（X-Emby-Token 头亦可）"},
                 {"媒体库", "GET", "/emby/Users/{uid}/Views", "媒体库视图列表"},
                 {"媒体库", "GET", "/emby/Library/MediaFolders", "媒体文件夹"},
                 {"媒体库", "POST", "/emby/Library/Refresh", "全库刷新"},
@@ -625,4 +626,74 @@ func (a *App) adminAPIList(w http.ResponseWriter, r *http.Request) {
                 {"管理", "GET", "/admin/probe/status", "媒体信息提取状态"},
         }
         a.json(w, 200, M{"ApiVersion": a.version, "Endpoints": docs})
+}
+
+// ============================================================
+// API Key 管理（Emby 兼容密钥签发）
+// ============================================================
+
+func maskKey(k models.ApiKey) string {
+        return k.Prefix + "••••••••••" + k.Suffix
+}
+
+// adminApiKeyList GET /admin/apikeys 密钥列表。
+func (a *App) adminApiKeyList(w http.ResponseWriter, r *http.Request) {
+        var keys []models.ApiKey
+        a.db.Order("created_at DESC").Find(&keys)
+        out := make([]M, 0, len(keys))
+        for _, k := range keys {
+                last := ""
+                if k.LastSeen != nil {
+                        last = k.LastSeen.Format("2006/1/2 15:04:05")
+                }
+                out = append(out, M{
+                        "ID":          k.ID,
+                        "Name":        k.Name,
+                        "Masked":      maskKey(k),
+                        "DateCreated": k.CreatedAt.Format("2006/1/2 15:04:05"),
+                        "LastSeen":    last,
+                })
+        }
+        a.json(w, 200, M{"Items": out, "TotalRecordCount": len(out)})
+}
+
+// adminApiKeyCreate POST /admin/apikeys {Name} 生成密钥（明文仅此一次返回）。
+func (a *App) adminApiKeyCreate(w http.ResponseWriter, r *http.Request) {
+        var body struct {
+                Name string `json:"Name"`
+        }
+        _ = bodyJSON(r, &body)
+        name := strings.TrimSpace(body.Name)
+        if name == "" {
+                name = "未命名密钥"
+        }
+        if len(name) > 100 {
+                name = name[:100]
+        }
+        raw, hash := models.NewToken()
+        key := models.ApiKey{Name: name, Hash: hash, Prefix: raw[:6], Suffix: raw[len(raw)-4:]}
+        if err := a.db.Create(&key).Error; err != nil {
+                a.fail(w, 500, "创建失败: "+err.Error())
+                return
+        }
+        logx.Info("已签发 API Key「%s」（后缀 %s）", name, key.Suffix)
+        a.json(w, 200, M{
+                "ID":          key.ID,
+                "Name":        key.Name,
+                "Key":         raw,
+                "Masked":      maskKey(key),
+                "DateCreated": key.CreatedAt.Format("2006/1/2 15:04:05"),
+        })
+}
+
+// adminApiKeyDelete DELETE /admin/apikeys/{id} 撤销密钥。
+func (a *App) adminApiKeyDelete(w http.ResponseWriter, r *http.Request, id string) {
+        var key models.ApiKey
+        if err := a.db.First(&key, "id = ?", id).Error; err != nil {
+                a.fail(w, 404, "密钥不存在")
+                return
+        }
+        a.db.Delete(&key)
+        logx.Info("已撤销 API Key「%s」", key.Name)
+        a.noContent(w)
 }

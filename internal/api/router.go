@@ -289,10 +289,10 @@ func (a *App) noContent(w http.ResponseWriter) {
         w.WriteHeader(http.StatusNoContent)
 }
 
-// adminGuard 管理员守卫。
+// adminGuard 管理员守卫。后台「API 管理」签发的 API Key 与管理员同级（Emby 兼容行为）。
 func (a *App) adminGuard(w http.ResponseWriter, r *http.Request, fn func()) {
         id := auth.From(r)
-        if id == nil || id.User == nil || !id.User.IsAdmin || id.IsAPIKey {
+        if id == nil || (!id.IsAPIKey && (id.User == nil || !id.User.IsAdmin)) {
                 a.fail(w, http.StatusForbidden, "需要管理员权限")
                 return
         }

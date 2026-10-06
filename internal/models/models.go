@@ -180,6 +180,17 @@ type Setting struct {
         Value string `gorm:"type:text"` // JSON
 }
 
+// ApiKey 后台「API 管理」签发的 Emby 兼容密钥（库中只存哈希，等同管理员权限）。
+type ApiKey struct {
+        ID        uint       `gorm:"primaryKey;autoIncrement" json:"id"`
+        Name      string     `gorm:"size:128" json:"name"`
+        Hash      string     `gorm:"uniqueIndex;size:64" json:"-"`
+        Prefix    string     `gorm:"size:8" json:"prefix"` // 明文前 6 位，用于掩码展示
+        Suffix    string     `gorm:"size:8" json:"suffix"` // 明文后 4 位
+        LastSeen  *time.Time `json:"lastSeen"`
+        CreatedAt time.Time  `json:"dateCreated"`
+}
+
 // PlayActivity 播放活动记录（后台活跃状态展示）。
 type PlayActivity struct {
         ID        uint      `gorm:"primaryKey;autoIncrement"`
