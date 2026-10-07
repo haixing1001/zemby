@@ -14,6 +14,7 @@
       @ended="onEnded"
       @pause="reportProgress"
     ></video>
+    <div v-if="needTap" class="tap-play" @click="tapPlay" title="点击开始播放">▶ 点击播放</div>
     <div v-if="err" class="empty" style="color:var(--danger)">{{ err }}</div>
   </div>
 </template>
@@ -29,6 +30,31 @@ const id = route.params.id
 const videoEl = ref(null)
 const item = ref(null)
 const err = ref('')
+// 浏览器自动播放策略阻止时（直接打开/刷新播放页无用户手势），显示手动播放覆盖层
+const needTap = ref(false)
+
+function tryAutoplay() {
+  const v = videoEl.value
+  if (!v) return
+  const p = v.play()
+  if (p && p.catch) {
+    p.catch((e) => {
+      if (e && e.name === 'NotAllowedError') needTap.value = true
+    })
+  }
+}
+
+function tapPlay() {
+  const v = videoEl.value
+  if (!v) return
+  const p = v.play()
+  if (p && p.then) {
+    // 播放成功才收起覆盖层；再次被策略拒绝则保持显示，避免用户被卡在暂停态
+    p.then(() => { needTap.value = false }).catch(() => { needTap.value = true })
+  } else {
+    needTap.value = false
+  }
+}
 
 let srcId = ''
 let container = 'mp4'
@@ -52,6 +78,8 @@ function onMeta() {
     if (sec > 5 && sec < v.duration * 0.95) v.currentTime = sec
   }
   runTimeTicks = Math.round(v.duration * 10000000)
+  // 自动播放（被浏览器策略拒绝时展示“点击播放”覆盖层）
+  tryAutoplay()
 }
 
 function onTime() {

@@ -9,6 +9,8 @@ import (
         "strings"
         "time"
 
+        "gorm.io/gorm/clause"
+
         "go-emby/internal/auth"
         "go-emby/internal/models"
         "go-emby/internal/scanner"
@@ -317,7 +319,16 @@ func (a *App) queryItems(q *itemQuery) ([]models.Item, int) {
 
         // 排序
         orderBy := a.sortClause(q)
-        dbq = dbq.Order(orderBy)
+        if q.Resume && q.SortBy == "" {
+                // 继续观看未显式指定排序时按 Emby 标准行为：最近播放的排前面（按用户数据中的 last_played_date 倒序）。
+                // 注意 GORM 的 Order() 不支持 clause.Expr（会静默忽略），须经 Statement.AddClause 传参化表达式
+                dbq.Statement.AddClause(clause.OrderBy{Expression: clause.Expr{
+                        SQL:  "(SELECT ud.last_played_date FROM user_data ud WHERE ud.user_id = ? AND ud.item_id = items.id) DESC",
+                        Vars: []interface{}{q.UserID},
+                }})
+        } else {
+                dbq = dbq.Order(orderBy)
+        }
 
         // 多版本合并：开启开关时全量取回内存分组后分页（仅影响电影）
         if a.mergeEnabledFor(q) {
