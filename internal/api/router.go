@@ -33,12 +33,26 @@ func New(cfg *config.Config, database *gorm.DB, sc *scanner.Scanner) *App {
         if database.First(&sv, "key = ?", "server_name").Error == nil && sv.Value != "" {
                 cfg.ServerName = sv.Value
         }
-        return &App{cfg: cfg, db: database, scanner: sc, serverID: serverIdentifier(cfg), version: "4.8.0.80"}
+        return &App{cfg: cfg, db: database, scanner: sc, serverID: serverIdentifier(cfg), version: "4.8.0.81"}
 }
 
 // Handler 返回总处理器。
 func (a *App) Handler() http.Handler {
         return auth.Middleware(http.HandlerFunc(a.serve), a.isPublic)
+}
+
+// IsDocumentNav 判断请求是否为浏览器文档导航（地址栏直达 / F5 刷新 / 链接整页跳转）。
+// 现代浏览器文档导航必带 Sec-Fetch-Mode: navigate 与 Sec-Fetch-Dest: document；
+// fetch/XHR/图片等资源请求不会命中这两个头，老浏览器回退 Accept: text/html 判定。
+// 反向代理通常原样转发浏览器请求头，两个信号互为冗余，任一命中即视为文档导航。
+func IsDocumentNav(r *http.Request) bool {
+        if r.Method != http.MethodGet {
+                return false
+        }
+        if r.Header.Get("Sec-Fetch-Mode") == "navigate" || r.Header.Get("Sec-Fetch-Dest") == "document" {
+                return true
+        }
+        return strings.Contains(r.Header.Get("Accept"), "text/html")
 }
 
 // isPublic 免认证端点。
@@ -65,9 +79,8 @@ func (a *App) isPublic(r *http.Request) bool {
                 return true
         }
         // 后台 SPA 页面导航（document 请求）放行：仅返回静态 HTML，不含数据；
-        // API 请求（fetch）不带 text/html Accept，仍需鉴权
-        if (p == "/admin" || strings.HasPrefix(p, "/admin/")) && r.Method == http.MethodGet &&
-                strings.Contains(r.Header.Get("Accept"), "text/html") {
+        // API 请求（fetch/XHR）不会命中文档导航信号，仍需鉴权
+        if (p == "/admin" || strings.HasPrefix(p, "/admin/")) && IsDocumentNav(r) {
                 return true
         }
         return false
@@ -116,7 +129,7 @@ func (a *App) serve(w http.ResponseWriter, r *http.Request) {
         // 路径原始大小写（ID 等不需要大小写，全部小写匹配即可）
         switch {
         case p == "/health":
-                a.json(w, 200, M{"status": "ok"})
+                a.json(w, 200, M{"status": "ok", "version": a.version})
         case p == "/system/ping":
                 w.Header().Set("Content-Type", "text/plain; charset=utf-8")
                 w.Write([]byte("Emby Server"))

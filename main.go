@@ -88,9 +88,10 @@ func main() {
                         }
                 }
                 // 浏览器文档导航（刷新/直达 SPA 路由，如 /library/{id}）回退静态页：
-                // fetch/XHR 不会带 text/html Accept，API 调用不受影响；
+                // 以 Sec-Fetch-Mode/Sec-Fetch-Dest 为主信号（现代浏览器刷新必带、fetch 永不带），
+                // Accept: text/html 为老浏览器兜底；fetch/XHR API 调用不受影响。
                 // 否则 SPA 路由与 API 前缀同名（library）时，刷新会被鉴权中间件拦成 401「请先登录」
-                if isAPI && r.Method == http.MethodGet && strings.Contains(r.Header.Get("Accept"), "text/html") {
+                if isAPI && api.IsDocumentNav(r) {
                         isAPI = false
                 }
                 if isAPI {
