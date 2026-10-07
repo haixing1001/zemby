@@ -13,12 +13,16 @@
 }
 * { box-sizing: border-box; }
 html, body, #app { height: 100%; }
+html { -webkit-text-size-adjust: 100%; }
 body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   font-size: 14px;
+  /* 移动端触摸优化：去除双击缩放延迟与点按高亮 */
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
 }
 a { color: inherit; text-decoration: none; }
 button { font-family: inherit; }
@@ -31,7 +35,8 @@ button { font-family: inherit; }
   position: sticky; top: 0; z-index: 50;
 }
 .topbar-inner {
-  max-width: 1320px; margin: 0 auto; padding: 0 20px;
+  max-width: 1320px; margin: 0 auto;
+  padding: 0 calc(20px + env(safe-area-inset-right)) 0 calc(20px + env(safe-area-inset-left));
   height: 56px; display: flex; align-items: center; gap: 24px;
 }
 .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 17px; }
@@ -39,7 +44,7 @@ button { font-family: inherit; }
 .nav-links a { color: var(--text-dim); padding: 6px 10px; border-radius: 8px; }
 .nav-links a.router-link-exact-active, .nav-links a:hover { color: var(--text); background: var(--bg-3); }
 .user-area { display: flex; align-items: center; gap: 10px; }
-.username { color: var(--text-dim); }
+.username { color: var(--text-dim); max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .main { flex: 1; width: 100%; max-width: 1320px; margin: 0 auto; padding: 24px 20px 60px; }
 
 /* 按钮 */
@@ -213,7 +218,10 @@ table.tbl { width: 100%; border-collapse: collapse; }
   background: linear-gradient(rgba(0,0,0,.8), transparent);
 }
 .player-top .back { cursor: pointer; color: #fff; font-size: 14px; background: rgba(0,0,0,.4); border: none; padding: 8px 14px; border-radius: 8px; }
-.player-top .title { color: #fff; font-size: 16px; font-weight: 600; }
+.player-top .title {
+  color: #fff; font-size: 16px; font-weight: 600;
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
 /* 日志 */
 .log-box {
@@ -239,6 +247,7 @@ table.tbl { width: 100%; border-collapse: collapse; }
 .toast.err { border-color: var(--danger); color: #ffb3ae; }
 .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 18px; flex-wrap: wrap; }
 .toolbar .spacer { flex: 1; }
+.search-input { width: 220px; max-width: 100%; }
 .muted { color: var(--text-dim); }
 .mt { margin-top: 16px; }
 .spin {
@@ -246,10 +255,62 @@ table.tbl { width: 100%; border-collapse: collapse; }
   border-radius: 50%; animation: spin .8s linear infinite; margin: 60px auto;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+/* ============ 移动端适配（≤760px 手机） ============ */
 @media (max-width: 760px) {
-  .detail-hero { flex-direction: column; }
-  .detail-hero .poster { width: 180px; }
-  .grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
+  .main { padding: 16px 12px 48px; }
+  /* 顶栏紧凑化 */
+  .topbar-inner { gap: 10px; height: 50px; padding-left: max(12px, env(safe-area-inset-left)); padding-right: max(12px, env(safe-area-inset-right)); }
+  .topbar { padding-top: env(safe-area-inset-top); }
+  .brand { font-size: 16px; }
+  .brand svg { width: 22px; height: 22px; }
+  .nav-links { gap: 2px; }
+  .nav-links a { padding: 8px 10px; }
+  .user-area { gap: 6px; }
+  .username { max-width: 72px; font-size: 13px; }
+  /* 触摸目标不小于 40px 高 */
+  .btn { padding: 11px 16px; }
+  .btn.sm { padding: 8px 13px; }
+  /* iOS 聚焦输入框自动放大问题：移动端输入字号不小于 16px */
+  input, select, textarea { font-size: 16px; }
+  label { margin-top: 10px; }
+  /* 海报墙更紧凑 */
+  .grid { grid-template-columns: repeat(auto-fill, minmax(108px, 1fr)); gap: 12px 8px; }
+  /* 首页板块横向滑动浏览（Netflix 风格） */
+  .grid.scroll { display: flex; overflow-x: auto; gap: 10px; padding-bottom: 6px; -webkit-overflow-scrolling: touch; }
+  .grid.scroll .poster-card { flex: 0 0 122px; scroll-snap-align: start; }
+  .grid.scroll .poster-card .title { font-size: 12px; }
+  /* 详情页 */
+  .detail-hero { flex-direction: column; gap: 16px; }
+  .detail-hero .poster { width: 150px; }
+  .detail-info h1 { font-size: 20px; }
+  .detail-info .overview { font-size: 13.5px; overflow-wrap: break-word; }
+  .episode-row { gap: 10px; padding: 10px 6px; }
+  .episode-row .ep-num { width: 30px; }
+  .episode-row .ep-thumb { width: 108px; }
+  .section { margin-bottom: 26px; }
+  /* 工具栏与搜索框 */
+  .toolbar { gap: 8px; }
+  .search-input { flex: 1 1 130px; width: auto; }
+  /* 弹出提示不溢出屏幕 */
+  .toast { max-width: 92vw; word-break: break-word; }
+  /* 播放器：刘海屏安全区 + 触摸按钮 */
+  .player-top {
+    padding: calc(10px + env(safe-area-inset-top)) calc(12px + env(safe-area-inset-right)) 10px calc(12px + env(safe-area-inset-left));
+  }
+  .player-top .back { padding: 11px 14px; }
+  /* 后台表格窄屏横向滚动，不挤压换行 */
+  table.tbl { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .tbl th, .tbl td { white-space: nowrap; }
+  .card { padding: 14px; }
+  .log-box { height: 56vh; }
+  /* 设置行窄屏换行，输入控件不再溢出屏幕 */
+  .set-row { flex-wrap: wrap; }
+  .set-row input, .set-row select { max-width: 100%; }
+}
+
+@media (max-width: 480px) {
+  .grid { grid-template-columns: repeat(3, 1fr); }
+  .grid.scroll .poster-card { flex-basis: 116px; }
 }
 
 /* ============ 管理后台（MoviePilot 风格） ============ */
@@ -307,13 +368,20 @@ table.tbl { width: 100%; border-collapse: collapse; }
   .adm-side.open { transform: none; box-shadow: 0 0 40px rgba(0,0,0,.6); }
   .adm-topbar {
     display: flex; align-items: center; gap: 12px; padding: 10px 14px;
+    padding-top: calc(10px + env(safe-area-inset-top));
     background: #101318; border-bottom: 1px solid #1e232b; position: sticky; top: 0; z-index: 90;
   }
   .adm-topbar .brand-mini { font-weight: 700; flex: 1; }
+  input, select, textarea { font-size: 16px; }
 }
 .adm-content { flex: 1; padding: 22px 26px 60px; min-width: 0; max-width: 1200px; }
 .adm-h1 { font-size: 21px; font-weight: 700; margin: 0 0 4px; }
 .adm-desc { color: #8b949e; font-size: 13px; margin-bottom: 18px; }
+/* 后台内容区窄屏内边距（须位于基础规则之后以覆盖） */
+@media (max-width: 900px) {
+  .adm-content { padding: 14px 12px 48px; }
+  .adm-h1 { font-size: 19px; }
+}
 
 /* 设置行 */
 .set-row {

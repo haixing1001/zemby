@@ -3,7 +3,7 @@
   <div v-else>
     <div v-if="resumeItems.length" class="section">
       <h2>继续观看</h2>
-      <div class="grid">
+      <div class="grid scroll">
         <div v-for="it in resumeItems" :key="it.Id" class="poster-card" @click="play(it)">
           <div class="poster">
             <img v-if="imgOk(it)" :src="posterUrl(it, 300)" @error="fail(it)" loading="lazy" />
@@ -18,7 +18,7 @@
 
     <div v-if="latestItems.length" class="section">
       <h2>最近添加</h2>
-      <div class="grid">
+      <div class="grid scroll">
         <div v-for="it in latestItems" :key="it.Id" class="poster-card" @click="open(it)">
           <div class="poster">
             <img v-if="imgOk(it)" :src="posterUrl(it, 300)" @error="fail(it)" loading="lazy" />

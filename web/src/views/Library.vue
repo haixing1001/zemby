@@ -3,7 +3,7 @@
     <div class="toolbar">
       <h2 style="margin:0;">{{ libName }}</h2>
       <div class="spacer"></div>
-      <input v-model="search" placeholder="搜索…" style="width: 200px;" @input="debouncedLoad" />
+      <input v-model="search" placeholder="搜索…" class="search-input" @input="debouncedLoad" />
       <select v-model="sortBy" @change="load">
         <option value="SortName">名称</option>
         <option value="PremiereDate">发行日期</option>

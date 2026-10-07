@@ -50,10 +50,11 @@ async function doLogin() {
 <style scoped>
 .login-wrap {
   min-height: 100vh; display: flex; align-items: center; justify-content: center;
+  padding: 24px 14px; box-sizing: border-box;
   background: radial-gradient(1200px 600px at 30% -10%, #1a2740 0%, var(--bg) 60%);
 }
 .login-card {
-  width: 380px; background: var(--bg-2); border: 1px solid var(--border);
+  width: min(380px, 100%); background: var(--bg-2); border: 1px solid var(--border);
   border-radius: 16px; padding: 40px 36px; text-align: center;
 }
 .login-card h1 { font-size: 22px; margin: 12px 0 4px; }
@@ -62,4 +63,8 @@ async function doLogin() {
 .login-btn { width: 100%; margin-top: 22px; }
 .login-err { color: var(--danger); font-size: 13px; margin-top: 10px; }
 .login-logo { display: flex; justify-content: center; }
+@media (max-width: 480px) {
+  .login-card { padding: 30px 20px; }
+  .login-card h1 { font-size: 19px; }
+}
 </style>

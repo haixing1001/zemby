@@ -9,6 +9,7 @@
       controls
       autoplay
       playsinline
+      webkit-playsinline
       @loadedmetadata="onMeta"
       @timeupdate="onTime"
       @ended="onEnded"
