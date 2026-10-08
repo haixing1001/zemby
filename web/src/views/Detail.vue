@@ -21,6 +21,15 @@
           <span v-for="g in genres" :key="g" class="chip">{{ g }}</span>
         </div>
         <div class="overview">{{ item.Overview || '暂无简介' }}</div>
+        <div v-if="item.Type === 'Movie' && playbackSources.length > 1" class="version-picker">
+          <label for="playback-version">播放版本</label>
+          <select id="playback-version" v-model="selectedSourceId">
+            <option v-for="(source, index) in playbackSources" :key="source.Id" :value="String(source.Id)">
+              {{ mediaSourceLabel(source, index) }}{{ index === 0 ? ' · 默认' : '' }}
+            </option>
+          </select>
+          <span class="muted">共 {{ playbackSources.length }} 个版本</span>
+        </div>
         <div class="toolbar mt">
           <button v-if="item.Type === 'Movie'" class="btn green" @click="play()">▶ 播放</button>
           <button v-if="resumePct > 0 && item.Type === 'Movie'" class="btn ghost" @click="play(true)">
@@ -98,6 +107,7 @@ const loading = ref(true)
 const error = ref('')
 const item = ref({})
 const broken = ref(false)
+const selectedSourceId = ref('')
 const relatedItems = ref([])
 const brokenRelatedImages = ref(new Set())
 const seasons = ref([])
@@ -109,6 +119,7 @@ let seasonRequestSeq = 0
 
 const genres = computed(() => item.value.Genres || [])
 const people = computed(() => item.value.People || [])
+const playbackSources = computed(() => item.value.MediaSources || [])
 function onCastImgError(ev) { ev.target.style.display = 'none' }
 function relatedImageBroken(related) { return brokenRelatedImages.value.has(related.Id) }
 function breakRelatedImage(related) {
@@ -117,6 +128,25 @@ function breakRelatedImage(related) {
   brokenRelatedImages.value = next
 }
 function openRelated(related) { router.push('/item/' + related.Id) }
+function mediaSourceLabel(source, index) {
+  const streams = source.MediaStreams || []
+  const video = streams.find(stream => stream.Type === 'Video')
+  const audio = streams.find(stream => stream.Type === 'Audio')
+  const labels = []
+  const height = Number(video?.Height) || 0
+  if (height >= 2000) labels.push('4K')
+  else if (height > 0) labels.push(`${height}p`)
+  const range = String(video?.VideoRange || '').trim()
+  if (range && range.toLowerCase() !== 'sdr') labels.push(range.toUpperCase())
+  if (video?.Codec) labels.push(String(video.Codec).toUpperCase())
+  if (audio) {
+    const audioLabel = audio.DisplayTitle || [audio.Language, audio.Codec, audio.Channels ? `${audio.Channels}ch` : ''].filter(Boolean).join(' ')
+    if (audioLabel) labels.push(audioLabel)
+  }
+  if (source.Size > 0) labels.push(`${(source.Size / (1024 ** 3)).toFixed(1)} GB`)
+  if (source.Name && source.Name !== item.value.Name) labels.push(source.Name)
+  return labels.join(' · ') || source.Name || `版本 ${index + 1}`
+}
 const runtimeText = computed(() => fmtRuntime(item.value.RunTimeTicks))
 const resumePct = computed(() => {
   const rt = item.value.RunTimeTicks || 0
@@ -138,8 +168,8 @@ function fmtRuntime(ticks) {
   return `${Math.floor(min / 60)} 小时 ${min % 60} 分`
 }
 
-async function play() {
-  router.push('/play/' + id.value)
+function play() {
+  router.push({ path: '/play/' + id.value, query: { source: selectedSourceId.value || undefined } })
 }
 async function playEpisode(ep) {
   router.push('/play/' + ep.Id)
@@ -183,6 +213,7 @@ async function loadItem(itemId) {
   error.value = ''
   item.value = {}
   broken.value = false
+  selectedSourceId.value = ''
   relatedItems.value = []
   brokenRelatedImages.value = new Set()
   seasons.value = []
@@ -193,6 +224,7 @@ async function loadItem(itemId) {
     const loadedItem = await api.item(itemId)
     if (request !== requestSeq) return
     item.value = loadedItem || {}
+    selectedSourceId.value = String(item.value.MediaSources?.[0]?.Id || '')
     if (item.value.Type === 'Movie' || item.value.Type === 'Series') {
       api.similarItems(itemId, 8).then(result => {
         if (request === requestSeq) relatedItems.value = result.Items || []
@@ -235,3 +267,13 @@ async function loadItem(itemId) {
 
 watch(() => route.params.id, value => loadItem(String(value || '')), { immediate: true })
 </script>
+
+<style scoped>
+.version-picker { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+.version-picker label { width: auto; margin: 0; color: var(--text-dim); font-size: 13px; }
+.version-picker select { width: min(100%, 480px); min-width: 220px; }
+@media (max-width: 760px) {
+  .version-picker { align-items: flex-start; flex-direction: column; gap: 6px; }
+  .version-picker select { width: 100%; min-width: 0; }
+}
+</style>

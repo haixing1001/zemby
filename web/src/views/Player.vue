@@ -125,7 +125,9 @@ onMounted(async () => {
       err.value = '无可用媒体源'
       return
     }
-    const src = pb.MediaSources[0]
+    const requestedSource = Array.isArray(route.query.source) ? route.query.source[0] : route.query.source
+    const src = pb.MediaSources.find(source => String(source.Id) === String(requestedSource || '')) ||
+      pb.MediaSources.find(source => source.IsDefault) || pb.MediaSources[0]
     srcId = src.Id
     container = src.Container || 'mp4'
     // 字幕轨道
