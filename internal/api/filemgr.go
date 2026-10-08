@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"go-emby/internal/tmdb"
 )
 
 // fileInfo 文件信息。
@@ -202,21 +204,12 @@ func safeName(name string) string {
 
 // tmdbSettings 读取 TMDB 设置。
 func tmdbSettings() (s tmdbSettingsType) {
-	v, ok := getSetting("tmdb")
-	if ok {
-		_ = jsonUnmarshalSetting(v, &s)
-	}
-	if s.Language == "" {
-		s.Language = "zh-CN"
-	}
-	s.DownloadImgs = true
-	return
+	return tmdb.LoadSettings()
 }
 
 // saveTMDBSettings 保存。
 func saveTMDBSettings(s tmdbSettingsType) error {
-	b, _ := jsonMarshalSetting(s)
-	return setSetting("tmdb", string(b))
+	return tmdb.SaveSettings(s)
 }
 
 // logxSnapshot 日志快照。

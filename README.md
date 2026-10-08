@@ -49,7 +49,7 @@ docker compose up -d
 
 访问 `http://服务器IP:8097`，管理员账号为 `admin`，密码为首次启动前设置的 `ADMIN_PASSWORD`。如果直接运行二进制文件，则首次启动前必须设置 `GEMBY_ADMIN_PASSWORD`（至少 12 个字符）；密码不会写入日志。
 
-登录后进入「后台管理 → 媒体库」添加媒体目录（如 `/media/movies`），创建后自动开始扫描；在「后台管理 → TMDB 刮削」填入 [TMDB API Key](https://www.themoviedb.org/settings/api) 即可自动刮削。
+登录后进入「后台管理 → 媒体库」添加媒体目录（如 `/media/movies`），创建后自动开始扫描；在「后台管理 → TMDB 刮削」填入 [TMDB API Key](https://www.themoviedb.org/settings/api) 即可自动刮削。若服务器无法直连 TMDB，可在同页分别填写 API 与图片镜像基础地址；镜像需要兼容 TMDB 路径，留空时使用官方地址。
 
 ### 配置说明
 

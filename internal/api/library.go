@@ -344,13 +344,15 @@ func (a *App) adminTMDB(w http.ResponseWriter, r *http.Request) {
                 if len(masked) > 8 {
                         masked = masked[:4] + "****" + masked[len(masked)-4:]
                 }
-                a.json(w, 200, M{"APIKey": masked, "HasKey": set.APIKey != "", "Language": set.Language, "DownloadImages": set.DownloadImgs})
+		a.json(w, 200, M{"APIKey": masked, "HasKey": set.APIKey != "", "Language": set.Language, "DownloadImages": set.DownloadImgs, "APIBaseURL": set.APIBaseURL, "ImageBaseURL": set.ImageBaseURL})
                 return
         }
         var body struct {
                 APIKey         string `json:"APIKey"`
                 Language       string `json:"Language"`
                 DownloadImages *bool  `json:"DownloadImages"`
+			APIBaseURL     *string `json:"APIBaseURL"`
+			ImageBaseURL   *string `json:"ImageBaseURL"`
         }
         if err := bodyJSON(r, &body); err != nil {
                 a.fail(w, 400, "请求体格式错误")
@@ -366,8 +368,14 @@ func (a *App) adminTMDB(w http.ResponseWriter, r *http.Request) {
         if body.DownloadImages != nil {
                 set.DownloadImgs = *body.DownloadImages
         }
+		if body.APIBaseURL != nil {
+			set.APIBaseURL = *body.APIBaseURL
+		}
+		if body.ImageBaseURL != nil {
+			set.ImageBaseURL = *body.ImageBaseURL
+		}
         if err := saveTMDBSettings(set); err != nil {
-                a.fail(w, 500, "保存失败")
+			a.fail(w, 400, err.Error())
                 return
         }
         logx.InfoC(logx.CatTMDB, "TMDB 刮削设置已更新（语言=%s）", set.Language)

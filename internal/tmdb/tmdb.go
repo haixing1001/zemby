@@ -19,8 +19,8 @@ import (
 )
 
 const (
-        apiBase    = "https://api.themoviedb.org/3"
-        imgBase    = "https://image.tmdb.org/t/p"
+	defaultAPIBase = "https://api.themoviedb.org/3"
+	defaultImgBase = "https://image.tmdb.org/t/p"
         maxImgSize = 10 << 20
 )
 
@@ -28,27 +28,60 @@ var client = &http.Client{Timeout: 20 * time.Second}
 
 // Settings 刮削设置。
 type Settings struct {
-        APIKey      string `json:"apiKey"`
-        Language    string `json:"language"` // zh-CN / en-US
-        DownloadImgs bool  `json:"downloadImages"`
+	APIKey       string `json:"apiKey"`
+	Language     string `json:"language"` // zh-CN / en-US
+	DownloadImgs bool   `json:"downloadImages"`
+	APIBaseURL   string `json:"apiBaseUrl"`
+	ImageBaseURL string `json:"imageBaseUrl"`
 }
 
 // LoadSettings 读取刮削设置。
 func LoadSettings() Settings {
-        s := Settings{Language: "zh-CN", DownloadImgs: true}
+	s := Settings{Language: "zh-CN", DownloadImgs: true, APIBaseURL: defaultAPIBase, ImageBaseURL: defaultImgBase}
         if v, ok := db.GetSetting("tmdb"); ok {
                 _ = json.Unmarshal([]byte(v), &s)
         }
         if s.Language == "" {
                 s.Language = "zh-CN"
         }
+	if s.APIBaseURL, _ = normalizeBaseURL(s.APIBaseURL, defaultAPIBase); s.APIBaseURL == "" {
+		s.APIBaseURL = defaultAPIBase
+	}
+	if s.ImageBaseURL, _ = normalizeBaseURL(s.ImageBaseURL, defaultImgBase); s.ImageBaseURL == "" {
+		s.ImageBaseURL = defaultImgBase
+	}
         return s
 }
 
 // SaveSettings 保存设置。
 func SaveSettings(s Settings) error {
-        b, _ := json.Marshal(s)
+	var err error
+	if s.APIBaseURL, err = normalizeBaseURL(s.APIBaseURL, defaultAPIBase); err != nil {
+		return fmt.Errorf("TMDB API 镜像地址无效：%w", err)
+	}
+	if s.ImageBaseURL, err = normalizeBaseURL(s.ImageBaseURL, defaultImgBase); err != nil {
+		return fmt.Errorf("TMDB 图片镜像地址无效：%w", err)
+	}
+	b, err := json.Marshal(s)
+	if err != nil {
+		return err
+	}
         return db.SetSetting("tmdb", string(b))
+}
+
+func normalizeBaseURL(raw, fallback string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return fallback, nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", err
+	}
+	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return "", fmt.Errorf("请输入不带查询参数的 http 或 https 基础地址")
+	}
+	return strings.TrimRight(u.String(), "/"), nil
 }
 
 // APIError TMDB 错误。
@@ -58,7 +91,8 @@ func (e *APIError) Error() string { return fmt.Sprintf("tmdb api %d: %s", e.Stat
 
 func get(ctx context.Context, key, path string, q url.Values, out any) error {
         q.Set("api_key", key)
-        req, err := http.NewRequestWithContext(ctx, "GET", apiBase+path+"?"+q.Encode(), nil)
+	base := LoadSettings().APIBaseURL
+	req, err := http.NewRequestWithContext(ctx, "GET", base+path+"?"+q.Encode(), nil)
         if err != nil {
                 return err
         }
@@ -277,7 +311,7 @@ func DownloadImage(ctx context.Context, metaDir, itemID string, size, path strin
                 return local, nil
         }
         _ = os.Remove(local)
-        u := imgBase + "/" + size + path
+	u := LoadSettings().ImageBaseURL + "/" + size + path
         var lastErr error
         for attempt := 0; attempt < 3; attempt++ {
                 req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
