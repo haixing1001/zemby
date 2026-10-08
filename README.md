@@ -81,9 +81,9 @@ All routes except health, login, and the embedded WebUI require a valid session 
 
 ## Build and publish images
 
-`.github/workflows/container.yml` builds the container on pushes to `main` or `codex`, version tags, pull requests, and manual dispatch. It publishes branch, version, and default-branch `latest` tags to `ghcr.io/<owner>/<repository>` for both amd64 and arm64. Pull requests build without publishing. The build also attaches provenance and an SBOM.
+`.github/workflows/container.yml` builds the container on pushes to `main`, `codex`, or `codx1`, version tags, pull requests, and manual dispatch. It publishes branch, version, and default-branch `latest` tags to `ghcr.io/<owner>/<repository>` for both amd64 and arm64. Pull requests build without publishing. The build also attaches provenance and an SBOM.
 
-The project currently lives locally in this workspace and has no GitHub remote configured. Once the new repository exists, push the `codex` branch there; the workflow will then publish `ghcr.io/<owner>/<repository>:codex`.
+This project is currently published on the `codx1` branch of `haixing1001/zemby`. A push to that branch publishes `ghcr.io/haixing1001/zemby:codx1` after the GitHub Actions build succeeds. For another repository, the image name follows that repository's owner and name.
 
 ## Design notes
 
