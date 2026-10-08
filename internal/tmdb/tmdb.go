@@ -340,6 +340,42 @@ func GetSeason(ctx context.Context, key string, tvID, season int, lang string) (
         return &r, nil
 }
 
+// CreditMember 演职员条目（cast 与 crew 共用结构）。
+type CreditMember struct {
+        Name        string `json:"name"`
+        Character   string `json:"character"`
+        Job         string `json:"job"`
+        ProfilePath string `json:"profile_path"`
+        Order       int    `json:"order"`
+}
+
+type creditsResp struct {
+        Cast []CreditMember `json:"cast"`
+        Crew []CreditMember `json:"crew"`
+}
+
+// GetCredits 获取演职员表，kind 为 "movie" 或 "tv"。
+func GetCredits(ctx context.Context, key, kind string, id int, lang string) ([]CreditMember, []CreditMember, error) {
+        var r creditsResp
+        q := url.Values{"language": {lang}}
+        if err := get(ctx, key, fmt.Sprintf("/%s/%d/credits", kind, id), q, &r); err != nil {
+                return nil, nil, err
+        }
+        return r.Cast, r.Crew, nil
+}
+
+// ProfileURL 将 TMDB 头像路径转成完整 URL（遵循图片镜像配置），路径为空时返回空串。
+func ProfileURL(base, profilePath, size string) string {
+        if profilePath == "" {
+                return ""
+        }
+        u, err := imageRequestURL(base, size, profilePath)
+        if err != nil {
+                return ""
+        }
+        return u
+}
+
 // DownloadImage 下载 TMDB 图片到本地 metaDir/itemID/ 下，返回本地路径。
 func DownloadImage(ctx context.Context, metaDir, itemID string, size, path string) (string, error) {
         if path == "" {

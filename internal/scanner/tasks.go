@@ -568,6 +568,7 @@ func (s *Scanner) applyMovieDetail(ctx context.Context, item *models.Item, d *tm
         }
         item.ProviderIDs = toJSON(ids)
         item.Scraped = true
+        s.applyTmdbPeople(ctx, item, "movie", d.ID, set)
 
         var posterErr error
         if set.DownloadImgs {
@@ -594,6 +595,90 @@ func (s *Scanner) applyMovieDetail(ctx context.Context, item *models.Item, d *tm
         }
         item.ImageRev = imageRev(item.Poster, item.Backdrop)
 	return posterErr
+}
+
+// maxCastMembers 演员表保留上限（TMDB 按出场重要性排序，取前 N 位）。
+const maxCastMembers = 20
+
+// peopleSourceTMDB People 条目的来源标记，区别于本地 NFO 数据。
+const peopleSourceTMDB = "tmdb"
+
+// applyTmdbPeople 拉取 TMDB 演职员表写入条目。本地 NFO 已提供演员时不覆盖（本地优先）；
+// 剧集仅取演员，电影额外附上 crew 中的导演；获取失败仅记日志，不影响刮削主流程。
+func (s *Scanner) applyTmdbPeople(ctx context.Context, item *models.Item, kind string, tmdbID int, set tmdb.Settings) {
+	if tmdbID <= 0 || peopleFromNFO(item.People) {
+		return
+	}
+	cast, crew, err := tmdb.GetCredits(ctx, set.APIKey, kind, tmdbID, set.Language)
+	if err != nil {
+		logx.TaskLog("tmdb", "warn", "获取演职员表失败《%s》：%v", item.Name, err)
+		return
+	}
+	people := make([]map[string]string, 0, maxCastMembers+2)
+	for _, c := range cast {
+		if len(people) >= maxCastMembers {
+			break
+		}
+		if c.Name == "" {
+			continue
+		}
+		p := map[string]string{"Name": c.Name, "Role": c.Character, "Source": peopleSourceTMDB}
+		if u := tmdb.ProfileURL(set.ImageBaseURL, c.ProfilePath, "w185"); u != "" {
+			p["Thumb"] = u
+		}
+		people = append(people, p)
+	}
+	if kind == "movie" {
+		for _, c := range crew {
+			if c.Job == "Director" && c.Name != "" {
+				people = append(people, map[string]string{"Name": c.Name, "Role": "导演", "Type": "Director"})
+			}
+		}
+	}
+	if len(people) > 0 {
+		item.People = toJSON(people)
+		logx.TaskLog("tmdb", "info", "《%s》演职员表已刮削（%d 人）", item.Name, len(people))
+	}
+}
+
+// parsePeople 解析 Item.People 的两种存储格式：[{"Name":..}] 与旧版 ["{...}"]。
+func parsePeople(raw string) []map[string]string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var objs []map[string]string
+	if err := json.Unmarshal([]byte(raw), &objs); err == nil && len(objs) > 0 {
+		return objs
+	}
+	var strArr []string
+	if json.Unmarshal([]byte(raw), &strArr) != nil {
+		return nil
+	}
+	var out []map[string]string
+	for _, s := range strArr {
+		var m map[string]string
+		if json.Unmarshal([]byte(s), &m) == nil && m != nil {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// peopleFromNFO 判断现有演员是否来自本地 NFO（无 tmdb 来源标记的演员视为本地数据，优先保留）。
+func peopleFromNFO(raw string) bool {
+	for _, p := range parsePeople(raw) {
+		kind := strings.ToLower(strings.TrimSpace(p["Type"]))
+		role := strings.ToLower(strings.TrimSpace(p["Role"]))
+		if kind == "director" || kind == "导演" || role == "director" || role == "导演" {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(p["Source"]), peopleSourceTMDB) {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func hasImageFile(path string) bool {
@@ -703,6 +788,7 @@ func (s *Scanner) scrapeSeries(ctx context.Context, item *models.Item, set tmdb.
         }
         item.ProviderIDs = toJSON(map[string]string{"Tmdb": fmt.Sprint(detail.ID)})
         item.Scraped = true
+        s.applyTmdbPeople(ctx, item, "tv", detail.ID, set)
         if set.DownloadImgs {
                 if p, err := tmdb.DownloadImage(ctx, s.metaDir(), item.ID, "w500", detail.PosterPath); err == nil {
                         item.Poster = p
