@@ -76,7 +76,7 @@
           <thead><tr><th>名称</th><th style="width:80px;">类型</th><th>失败原因</th><th style="width:190px;">操作</th></tr></thead>
           <tbody>
             <tr v-for="f in failed" :key="f.ID">
-              <td><a href="javascript:void(0)" @click="$router.push('/item/' + f.ID)">{{ f.Name }}</a><div class="muted" style="font-size:11.5px;">{{ f.Path }}</div></td>
+              <td><a href="javascript:void(0)" @click="$router.push('/item/' + (f.RouteID || f.ID))">{{ f.Name }}</a><div class="muted" style="font-size:11.5px;">{{ f.Path }}</div></td>
               <td>{{ f.Type === 'Series' ? '剧集' : '电影' }}</td>
               <td class="muted" style="font-size:12.5px;">{{ f.Error }}</td>
               <td><div style="display:flex;gap:6px;flex-wrap:wrap;">
@@ -116,7 +116,7 @@
           <tbody>
             <tr v-for="f in incompleteItems.Items" :key="f.ID">
               <td>
-                <a href="javascript:void(0)" @click="$router.push('/item/' + f.ID)">{{ f.Name }}</a>
+                <a href="javascript:void(0)" @click="$router.push('/item/' + (f.RouteID || f.ID))">{{ f.Name }}</a>
                 <span v-if="f.Year" class="muted">（{{ f.Year }}）</span>
                 <div class="muted" style="font-size:11.5px;">{{ f.Path }}</div>
               </td>

@@ -285,6 +285,7 @@ func (a *App) itemDTO(it *models.Item, detail bool, userID string) M {
 func (a *App) itemDTOWithBatch(it *models.Item, detail bool, userID string, batch *itemDTOBatch) M {
         d := M{
                 "Id": it.ID, "ServerId": a.serverID, "Name": it.Name,
+                "RouteId": it.TmdbRouteID(),
                 "SortName": it.SortName, "Type": it.Type,
                 "IsFolder": it.Type == "Series" || it.Type == "Season",
                 "MediaType":        "Video",

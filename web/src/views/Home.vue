@@ -75,7 +75,7 @@ function progressPct(it) {
   return rt > 0 ? Math.min(100, Math.round((pos / rt) * 100)) : 0
 }
 function open(it) {
-  router.push('/item/' + it.Id)
+  router.push('/item/' + (it.RouteId || it.Id))
 }
 function play(it) {
   router.push('/play/' + it.Id)

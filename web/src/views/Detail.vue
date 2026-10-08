@@ -103,6 +103,7 @@ import { api, state, imageUrl } from '../api/client'
 const route = useRoute()
 const router = useRouter()
 const id = computed(() => String(route.params.id || ''))
+const internalId = computed(() => String(item.value.Id || ''))
 const loading = ref(true)
 const error = ref('')
 const item = ref({})
@@ -127,7 +128,7 @@ function breakRelatedImage(related) {
   next.add(related.Id)
   brokenRelatedImages.value = next
 }
-function openRelated(related) { router.push('/item/' + related.Id) }
+function openRelated(related) { router.push('/item/' + (related.RouteId || related.Id)) }
 function mediaSourceLabel(source, index) {
   const streams = source.MediaStreams || []
   const video = streams.find(stream => stream.Type === 'Video')
@@ -169,13 +170,13 @@ function fmtRuntime(ticks) {
 }
 
 function play() {
-  router.push({ path: '/play/' + id.value, query: { source: selectedSourceId.value || undefined } })
+  router.push({ path: '/play/' + internalId.value, query: { source: selectedSourceId.value || undefined } })
 }
 async function playEpisode(ep) {
   router.push('/play/' + ep.Id)
 }
 async function toggleFav() {
-  const itemId = id.value
+  const itemId = internalId.value
   if (item.value.UserData?.IsFavorite) {
     await api.del(`/Users/${state.userId}/FavoriteItems/${itemId}`)
     item.value.UserData.IsFavorite = false
@@ -186,19 +187,19 @@ async function toggleFav() {
 }
 async function markSeen() {
   if (item.value.UserData?.Played) return
-  await api.markPlayed(state.userId, id.value)
+  await api.markPlayed(state.userId, internalId.value)
   item.value.UserData.Played = true
 }
 
 async function selectSeason(sid) {
-  const itemId = id.value
+  const itemId = internalId.value
   const request = requestSeq
   const seasonRequest = ++seasonRequestSeq
   currentSeason.value = sid
   episodes.value = []
   try {
     const d = await api.episodes(itemId, sid)
-    if (request === requestSeq && seasonRequest === seasonRequestSeq && itemId === id.value) {
+    if (request === requestSeq && seasonRequest === seasonRequestSeq && itemId === internalId.value) {
       episodes.value = d.Items || []
     }
   } catch (e) {
@@ -224,19 +225,20 @@ async function loadItem(itemId) {
     const loadedItem = await api.item(itemId)
     if (request !== requestSeq) return
     item.value = loadedItem || {}
+    const internalItemId = String(item.value.Id || itemId)
     selectedSourceId.value = String(item.value.MediaSources?.[0]?.Id || '')
     if (item.value.Type === 'Movie' || item.value.Type === 'Series') {
-      api.similarItems(itemId, 8).then(result => {
+      api.similarItems(internalItemId, 8).then(result => {
         if (request === requestSeq) relatedItems.value = result.Items || []
       }).catch(() => {})
     }
     if (item.value.Type === 'Series') {
-      const s = await api.seasons(itemId)
+      const s = await api.seasons(internalItemId)
       if (request !== requestSeq) return
       seasons.value = s.Items || []
       if (seasons.value.length) {
         currentSeason.value = seasons.value[0].Id
-        const requests = seasons.value.map(sn => api.episodes(itemId, sn.Id).then(
+        const requests = seasons.value.map(sn => api.episodes(internalItemId, sn.Id).then(
           value => ({ ok: true, value }),
           reason => ({ ok: false, reason })
         ))

@@ -274,6 +274,50 @@ func TmdbKindForItemType(itemType string) string {
         }
 }
 
+// TmdbRouteID 返回前台详情页使用的稳定身份。电影和剧集使用 TMDB 的独立命名空间，
+// 其余层级继续使用内部 ID，避免季/集的父级 TMDB 编号与影片本身混淆。
+func (i *Item) TmdbRouteID() string {
+        if i == nil {
+                return ""
+        }
+        tmdbID := strings.TrimSpace(i.TmdbID)
+        if tmdbID == "" {
+                return i.ID
+        }
+        var kind string
+        switch i.Type {
+        case "Movie":
+                kind = "movie"
+        case "Series":
+                kind = "tv"
+        default:
+                return i.ID
+        }
+        return "tmdb-" + kind + "-" + tmdbID
+}
+
+// ParseTmdbRouteID 解析前台 TMDB 路由身份。
+func ParseTmdbRouteID(routeID string) (kind string, tmdbID string, ok bool) {
+        routeID = strings.ToLower(strings.TrimSpace(routeID))
+        const prefix = "tmdb-"
+        if !strings.HasPrefix(routeID, prefix) {
+                return "", "", false
+        }
+        parts := strings.Split(strings.TrimPrefix(routeID, prefix), "-")
+        if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+                return "", "", false
+        }
+        if parts[0] != "movie" && parts[0] != "tv" {
+                return "", "", false
+        }
+        for _, ch := range parts[1] {
+                if ch < '0' || ch > '9' {
+                        return "", "", false
+                }
+        }
+        return parts[0], parts[1], true
+}
+
 // BeforeSave GORM 钩子：任何保存都同步刷新首字母检索串。
 func (i *Item) BeforeSave(tx *gorm.DB) error {
         i.Initials = InitialsOf(i.Name)

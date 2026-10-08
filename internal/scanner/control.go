@@ -206,6 +206,7 @@ func FailedScrapes(limit int) []map[string]any {
         for i := range items {
                 out = append(out, map[string]any{
                         "ID": items[i].ID, "Name": items[i].Name, "Type": items[i].Type,
+                        "RouteID": items[i].TmdbRouteID(),
                         "Path": items[i].Path, "Year": items[i].Year, "Error": items[i].ScrapeError,
                 })
         }
@@ -222,7 +223,7 @@ func IncompleteItems(limit int) ([]map[string]any, int, error) {
 		limit = 500
 	}
 	var items []models.Item
-	if err := db.DB.Select("id, name, type, path, year, poster, backdrop, people, overview, scrape_error, updated_at").
+	if err := db.DB.Select("id, name, type, tmdb_id, tmdb_kind, path, year, poster, backdrop, people, overview, scrape_error, updated_at").
 		Where("type IN ?", []string{"Movie", "Series"}).
 		Order("updated_at DESC").Find(&items).Error; err != nil {
 		return nil, 0, err
@@ -242,6 +243,7 @@ func IncompleteItems(limit int) ([]map[string]any, int, error) {
 		}
 		out = append(out, map[string]any{
 			"ID": item.ID, "Name": item.Name, "Type": item.Type,
+			"RouteID": item.TmdbRouteID(),
 			"Path": item.Path, "Year": item.Year, "Error": item.ScrapeError,
 			"MissingFields": missing,
 		})

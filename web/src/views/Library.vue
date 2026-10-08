@@ -21,7 +21,7 @@
     <div v-if="loading" class="spin"></div>
     <div v-else-if="!items.length && !error" class="empty">没有找到条目</div>
     <div v-else-if="items.length" class="grid">
-      <div v-for="it in items" :key="it.Id" class="poster-card" @click="router.push('/item/' + it.Id)">
+      <div v-for="it in items" :key="it.Id" class="poster-card" @click="router.push('/item/' + itemRouteId(it))">
         <div class="poster">
           <img v-if="imgOk(it)" :src="posterUrl(it, 300)" @error="fail(it)" loading="lazy" />
           <div v-else class="placeholder">{{ initial(it) }}</div>
@@ -69,6 +69,7 @@ function posterUrl(it, w) { return imageUrl(it.Id, 'Primary', w) }
 function imgOk(it) { return !broken.value.has(it.Id) }
 function fail(it) { broken.value.add(it.Id) }
 function initial(it) { return (it.Name || '?')[0] }
+function itemRouteId(it) { return it.RouteId || it.Id }
 
 async function applyListSettings(targetLibId) {
   if (settingsPromise && settingsLibId === targetLibId) return settingsPromise

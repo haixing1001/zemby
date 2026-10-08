@@ -600,6 +600,24 @@ func (a *App) itemsLatest(w http.ResponseWriter, r *http.Request) {
         a.json(w, 200, out)
 }
 
+// itemByRouteID 兼容内部 ID 与 TMDB 路由身份。多版本命中同一 TMDB ID 时，
+// 优先选择已刮削且有海报的代表记录，再按创建时间保持结果稳定。
+func (a *App) itemByRouteID(id string) (models.Item, bool) {
+        var it models.Item
+        if kind, tmdbID, ok := models.ParseTmdbRouteID(id); ok {
+                itemType := "Movie"
+                if kind == "tv" {
+                        itemType = "Series"
+                }
+                err := a.db.Where("type = ? AND tmdb_kind = ? AND tmdb_id = ?", itemType, kind, tmdbID).
+                        Order("CASE WHEN scraped = 1 THEN 0 ELSE 1 END, CASE WHEN poster <> '' THEN 0 ELSE 1 END, date_created, id").
+                        First(&it).Error
+                return it, err == nil
+        }
+        err := a.db.First(&it, "id = ?", id).Error
+        return it, err == nil
+}
+
 // itemDetail 单条目详情。
 func (a *App) itemDetail(w http.ResponseWriter, r *http.Request, id string) {
         id = strings.ToLower(id)
@@ -608,7 +626,9 @@ func (a *App) itemDetail(w http.ResponseWriter, r *http.Request, id string) {
                 return
         }
         var it models.Item
-        if err := a.db.First(&it, "id = ?", id).Error; err != nil {
+        found := false
+        it, found = a.itemByRouteID(id)
+        if !found {
                 a.fail(w, 404, "条目不存在")
                 return
         }
@@ -842,6 +862,7 @@ func (a *App) searchHints(w http.ResponseWriter, r *http.Request) {
                 it := &items[i]
                 out = append(out, M{
                         "Id": it.ID, "Name": it.Name, "Type": it.Type,
+                        "RouteId": it.TmdbRouteID(),
                         "MediaType": "Video", "ProductionYear": it.Year,
                         "PrimaryImageTag": itemTag(it),
                 })
