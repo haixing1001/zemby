@@ -95,6 +95,8 @@ type Item struct {
         People           string    `gorm:"type:text" json:"-"` // JSON array [{Name,Role}]
         Tags             string    `gorm:"type:text" json:"-"`
         ProviderIDs      string    `gorm:"size:512" json:"-"` // JSON {Tmdb,Imdb}
+        TmdbID           string    `gorm:"index;size:32" json:"-"` // TMDB 编号
+        TmdbKind         string    `gorm:"index;size:16" json:"-"` // movie | tv | season | episode
         RunTimeTicks     int64     `json:"runTimeTicks,omitempty"`
         Path             string    `gorm:"index;size:768" json:"-"` // 文件或目录
         Initials         string    `gorm:"index;size:512" json:"-"` // 拼音首字母检索串（小写）
@@ -254,6 +256,22 @@ func InitialsOf(name string) string {
                 }
         }
         return b.String()
+}
+
+// TmdbKindForItemType 返回 TMDB ID 的命名空间，避免电影/剧集编号碰撞。
+func TmdbKindForItemType(itemType string) string {
+        switch itemType {
+        case "Movie":
+                return "movie"
+        case "Series":
+                return "tv"
+        case "Season":
+                return "season"
+        case "Episode":
+                return "episode"
+        default:
+                return ""
+        }
 }
 
 // BeforeSave GORM 钩子：任何保存都同步刷新首字母检索串。

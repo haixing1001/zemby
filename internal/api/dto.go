@@ -191,9 +191,27 @@ func (a *App) itemDTOs(items []models.Item, detail bool, userID string) []M {
 }
 
 type movieVersionIdentity struct {
+        TmdbID    string
+        TmdbKind  string
         Year      int
         Name      string
         LibraryID string
+}
+
+// movieVersionIdentityFor TMDB ID 是电影版本的第一身份；无 TMDB ID 时降级同名同年。
+func movieVersionIdentityFor(it *models.Item, across bool) movieVersionIdentity {
+        identity := movieVersionIdentity{TmdbID: strings.TrimSpace(it.TmdbID), TmdbKind: strings.TrimSpace(it.TmdbKind)}
+        if identity.TmdbID != "" && identity.TmdbKind == "" {
+                identity.TmdbKind = "movie" // 兼容回填前瞬时状态
+        }
+        if identity.TmdbID == "" {
+                identity.Year = it.Year
+                identity.Name = strings.ToLower(strings.TrimSpace(it.Name))
+        }
+        if !across {
+                identity.LibraryID = it.LibraryID
+        }
+        return identity
 }
 
 func (a *App) loadMovieVersions(items []models.Item, enhance scanner.EnhanceConfig) map[string][]models.Item {
@@ -202,19 +220,23 @@ func (a *App) loadMovieVersions(items []models.Item, enhance scanner.EnhanceConf
         args := make([]any, 0)
         for i := range items {
                 it := &items[i]
-                if it.Type != "Movie" || strings.TrimSpace(it.Name) == "" {
+                if it.Type != "Movie" || (strings.TrimSpace(it.TmdbID) == "" && strings.TrimSpace(it.Name) == "") {
                         continue
                 }
-                identity := movieVersionIdentity{Year: it.Year, Name: strings.ToLower(strings.TrimSpace(it.Name))}
-                if !enhance.MergeVersionsAcrossLibraries {
-                        identity.LibraryID = it.LibraryID
-                }
+                identity := movieVersionIdentityFor(it, enhance.MergeVersionsAcrossLibraries)
                 if identities[identity] {
                         continue
                 }
                 identities[identity] = true
-                clause := "(year = ? AND lower(trim(name)) = ?"
-                args = append(args, identity.Year, identity.Name)
+                clause := "("
+                if identity.TmdbID != "" {
+                        clause += "tmdb_id = ? AND tmdb_kind = ?"
+                        args = append(args, identity.TmdbID)
+                        args = append(args, identity.TmdbKind)
+                } else {
+                        clause += "year = ? AND lower(trim(name)) = ?"
+                        args = append(args, identity.Year, identity.Name)
+                }
                 if identity.LibraryID != "" {
                         clause += " AND library_id = ?"
                         args = append(args, identity.LibraryID)
@@ -231,10 +253,7 @@ func (a *App) loadMovieVersions(items []models.Item, enhance scanner.EnhanceConf
         byIdentity := make(map[movieVersionIdentity][]models.Item, len(identities))
         for i := range candidates {
                 candidate := candidates[i]
-                identity := movieVersionIdentity{Year: candidate.Year, Name: strings.ToLower(strings.TrimSpace(candidate.Name))}
-                if !enhance.MergeVersionsAcrossLibraries {
-                        identity.LibraryID = candidate.LibraryID
-                }
+                identity := movieVersionIdentityFor(&candidate, enhance.MergeVersionsAcrossLibraries)
                 if identities[identity] {
                         byIdentity[identity] = append(byIdentity[identity], candidate)
                 }
@@ -244,10 +263,7 @@ func (a *App) loadMovieVersions(items []models.Item, enhance scanner.EnhanceConf
                 if it.Type != "Movie" {
                         continue
                 }
-                identity := movieVersionIdentity{Year: it.Year, Name: strings.ToLower(strings.TrimSpace(it.Name))}
-                if !enhance.MergeVersionsAcrossLibraries {
-                        identity.LibraryID = it.LibraryID
-                }
+                identity := movieVersionIdentityFor(it, enhance.MergeVersionsAcrossLibraries)
                 for _, candidate := range byIdentity[identity] {
                         if candidate.ID == it.ID {
                                 continue

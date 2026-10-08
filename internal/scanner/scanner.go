@@ -351,6 +351,8 @@ func (s *Scanner) upsertMovie(lib *models.Library, vf videoFile) error {
                 item.ScrapeError = existing.ScrapeError
                 item.Poster, item.Backdrop, item.Thumb, item.Logo = existing.Poster, existing.Backdrop, existing.Thumb, existing.Logo
                 item.ProviderIDs, item.Overview = existing.ProviderIDs, existing.Overview
+                item.TmdbID = existing.TmdbID
+                item.TmdbKind = existing.TmdbKind
                 item.Name, item.OriginalTitle = existing.Name, existing.OriginalTitle
                 item.Genres, item.Studios, item.People, item.Tags = existing.Genres, existing.Studios, existing.People, existing.Tags
                 item.PremiereDate, item.CommunityRating, item.OfficialRating, item.RunTimeTicks =
@@ -542,6 +544,8 @@ func (s *Scanner) upsertSeries(lib *models.Library, seriesDir string, files []vi
                         item.Scraped = existing.Scraped
                         item.Poster, item.Thumb = existing.Poster, existing.Thumb
                         item.ProviderIDs, item.Overview = existing.ProviderIDs, existing.Overview
+                        item.TmdbID = existing.TmdbID
+                        item.TmdbKind = existing.TmdbKind
                         if existing.Scraped && existing.Name != "" {
                                 item.Name = existing.Name
                         }

@@ -108,6 +108,8 @@ func (s *Scanner) applyNFO(item *models.Item, videoPath, nfoName string) {
         }
         if len(ids) > 0 {
                 item.ProviderIDs = toJSON(ids)
+                item.TmdbID = strings.TrimSpace(ids["Tmdb"])
+                item.TmdbKind = models.TmdbKindForItemType(item.Type)
                 item.Scraped = true // 已有第三方 ID，无需再刮削
         }
         // NFO 内嵌流信息（若尚无流）
@@ -213,6 +215,8 @@ func applyNFOToSeries(series *models.Item, n *nfo.NFO) {
         }
         if len(ids) > 0 {
                 series.ProviderIDs = toJSON(ids)
+                series.TmdbID = strings.TrimSpace(ids["Tmdb"])
+                series.TmdbKind = models.TmdbKindForItemType(series.Type)
         }
 }
 

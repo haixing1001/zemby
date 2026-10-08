@@ -392,13 +392,28 @@ func (a *App) mergeEnabledFor(q *itemQuery) bool {
         return true
 }
 
-// movieVersionKey 电影版本分组键（同名同年归并，刮削后名称一致天然同键）。
-func movieVersionKey(it *models.Item) string {
+// movieVersionKey 电影版本分组键：优先 TMDB ID；无 TMDB ID 时降级同名同年。
+func movieVersionKey(it *models.Item, across bool) string {
+        if tmdbID := strings.TrimSpace(it.TmdbID); tmdbID != "" {
+                tmdbKind := strings.TrimSpace(it.TmdbKind)
+                if tmdbKind == "" {
+                        tmdbKind = "movie"
+                }
+                key := "tmdb:" + tmdbKind + ":" + tmdbID
+                if !across {
+                        key = it.LibraryID + "|" + key
+                }
+                return key
+        }
         n := strings.ToLower(strings.TrimSpace(it.Name))
         if n == "" {
                 return ""
         }
-        return n + "|" + strconv.Itoa(it.Year)
+        key := n + "|" + strconv.Itoa(it.Year)
+        if !across {
+                key = it.LibraryID + "|" + key
+        }
+        return key
 }
 
 // groupVersions 查询结果内存分组：每组保留排序首位作代表，总数按分组后计。
@@ -411,10 +426,7 @@ func (a *App) groupVersions(all []models.Item) ([]models.Item, int) {
                 it := &all[i]
                 key := ""
                 if it.Type == "Movie" {
-                        key = movieVersionKey(it)
-                        if key != "" && !across {
-                                key = it.LibraryID + "|" + key
-                        }
+                        key = movieVersionKey(it, across)
                 }
                 if key == "" {
                         out = append(out, *it)
@@ -434,6 +446,19 @@ func (a *App) versionMembers(it *models.Item) []models.Item {
         enh := scanner.LoadEnhanceConfig()
         if it.Type != "Movie" || (!enh.MergeVersionsInLibrary && !enh.MergeVersionsAcrossLibraries) {
                 return nil
+        }
+        if tmdbID := strings.TrimSpace(it.TmdbID); tmdbID != "" {
+                tmdbKind := strings.TrimSpace(it.TmdbKind)
+                if tmdbKind == "" {
+                        tmdbKind = "movie"
+                }
+                q := a.db.Where("type = 'Movie' AND id <> ? AND tmdb_id = ? AND tmdb_kind = ?", it.ID, tmdbID, tmdbKind)
+                if !enh.MergeVersionsAcrossLibraries {
+                        q = q.Where("library_id = ?", it.LibraryID)
+                }
+                var out []models.Item
+                q.Order("date_created").Limit(100).Find(&out)
+                return out
         }
         name := strings.ToLower(strings.TrimSpace(it.Name))
         if name == "" {

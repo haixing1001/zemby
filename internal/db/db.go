@@ -2,11 +2,13 @@
 package db
 
 import (
+        "encoding/json"
 	"fmt"
         "log"
         "os"
         "path/filepath"
         "sync"
+        "strings"
         "time"
 	"unicode/utf8"
 
@@ -54,8 +56,62 @@ func Open(path string) error {
                 return err
         }
         DB = d
+        if err := backfillItemTmdbIDs(); err != nil {
+                return err
+        }
         return seed()
 }
+
+// backfillItemTmdbIDs 从旧版 ProviderIDs JSON 回填独立 TMDB 身份字段。
+func backfillItemTmdbIDs() error {
+        rows, err := DB.Model(&models.Item{}).
+                Select("id", "type", "provider_ids").
+                Where("tmdb_id = '' AND provider_ids LIKE '%Tmdb%'").Rows()
+        if err != nil {
+                return err
+        }
+        defer rows.Close()
+
+        type oldID struct {
+                ID          string
+                Type        string
+                ProviderIDs string
+        }
+        oldRows := make([]oldID, 0)
+        for rows.Next() {
+                var row oldID
+                if err := rows.Scan(&row.ID, &row.Type, &row.ProviderIDs); err != nil {
+                        return err
+                }
+                oldRows = append(oldRows, row)
+        }
+        if err := rows.Err(); err != nil {
+                return err
+        }
+        if err := rows.Close(); err != nil {
+                return err
+        }
+
+        for i := range oldRows {
+                row := oldRows[i]
+                var ids map[string]string
+                if err := json.Unmarshal([]byte(row.ProviderIDs), &ids); err != nil {
+                        continue
+                }
+                tmdbID := strings.TrimSpace(ids["Tmdb"])
+                if tmdbID == "" {
+                        continue
+                }
+                if err := DB.Model(&models.Item{}).Where("id = ?", row.ID).Updates(map[string]any{
+                        "tmdb_id":   tmdbID,
+                        "tmdb_kind": models.TmdbKindForItemType(row.Type),
+                }).Error; err != nil {
+                        return err
+                }
+        }
+        return nil
+}
+
 
 // seed 初始管理员与默认设置。
 func seed() error {

@@ -349,11 +349,27 @@ func (s *Scanner) scrapeItemWithKeyword(ctx context.Context, itemID, query strin
         if item.ProviderIDs != "" {
                 _ = json.Unmarshal([]byte(item.ProviderIDs), &ids)
         }
+        if v := strings.TrimSpace(ids["Tmdb"]); v != "" {
+                item.TmdbID = v
+                if item.TmdbKind == "" {
+                        item.TmdbKind = models.TmdbKindForItemType(item.Type)
+                }
+        }
 	if query = strings.TrimSpace(query); query != "" {
 		item.Name = query
 		item.Year = queryYear
 		ids = map[string]string{} // 手动关键词要求重新搜索，而不是沿用旧 TMDB ID。
+		item.TmdbID, item.TmdbKind = "", ""
 	}
+        if query == "" && item.Type == "Movie" {
+                reused, err := s.reuseScrapedMovieByTmdbID(&item)
+                if err != nil {
+                        return err
+                }
+                if reused {
+                        return nil
+                }
+        }
         var err error
         switch item.Type {
         case "Movie":
@@ -369,8 +385,60 @@ func (s *Scanner) scrapeItemWithKeyword(ctx context.Context, itemID, query strin
         return err
 }
 
+// reuseScrapedMovieByTmdbID 自动刮削时复用同 TMDB ID 的完整电影记录，避免重复请求 TMDB。
+func (s *Scanner) reuseScrapedMovieByTmdbID(item *models.Item) (bool, error) {
+        if item == nil || item.Type != "Movie" || strings.TrimSpace(item.TmdbID) == "" {
+                return false, nil
+        }
+        var candidates []models.Item
+        tmdbKind := strings.TrimSpace(item.TmdbKind)
+        if tmdbKind == "" {
+                tmdbKind = models.TmdbKindForItemType(item.Type)
+        }
+        if err := db.DB.
+                Where("type = ? AND tmdb_id = ? AND tmdb_kind = ? AND id <> ? AND scraped = ?", "Movie", item.TmdbID, tmdbKind, item.ID, true).
+                Order("date_created").Find(&candidates).Error; err != nil {
+                return false, err
+        }
+        for i := range candidates {
+                source := &candidates[i]
+                if strings.TrimSpace(source.Name) == "" || strings.TrimSpace(source.Overview) == "" || !hasImageFile(source.Poster) {
+                        continue
+                }
+                item.Name = source.Name
+                item.SortName = source.SortName
+                item.OriginalTitle = source.OriginalTitle
+                item.Overview = source.Overview
+                item.PremiereDate = source.PremiereDate
+                item.Year = source.Year
+                item.CommunityRating = source.CommunityRating
+                item.OfficialRating = source.OfficialRating
+                item.Genres = source.Genres
+                item.Studios = source.Studios
+                item.People = source.People
+                item.Tags = source.Tags
+                item.ProviderIDs = source.ProviderIDs
+                item.TmdbID = source.TmdbID
+                item.TmdbKind = source.TmdbKind
+                item.RunTimeTicks = source.RunTimeTicks
+                item.Poster, item.Thumb, item.Backdrop, item.Logo = source.Poster, source.Thumb, source.Backdrop, source.Logo
+                item.ImageRev = source.ImageRev
+                item.Scraped = true
+                item.ScrapeError = ""
+                if err := db.DB.Save(item).Error; err != nil {
+                        return false, err
+                }
+                logx.TaskLog("scrape", "info", "复用同 TMDB ID=%s 的已刮削记录《%s》，跳过重复 TMDB 请求", item.TmdbID, item.Name)
+                return true, nil
+        }
+        return false, nil
+}
+
 func (s *Scanner) scrapeMovie(ctx context.Context, item *models.Item, set tmdb.Settings, ids map[string]string) error {
         var detail *tmdb.MovieDetail
+        if strings.TrimSpace(item.TmdbKind) == "tv" {
+                return s.scrapeSeries(ctx, item, set, ids)
+        }
 	searchPosterPath := ""
         if v := ids["Tmdb"]; v != "" {
                 id := atoi(v)
@@ -570,6 +638,8 @@ func (s *Scanner) applyMovieDetail(ctx context.Context, item *models.Item, d *tm
                 ids["Imdb"] = d.IMDBID
         }
         item.ProviderIDs = toJSON(ids)
+        item.TmdbID = fmt.Sprint(d.ID)
+        item.TmdbKind = "movie"
         item.Scraped = true
         s.applyTmdbPeople(ctx, item, "movie", d.ID, set)
 
@@ -790,6 +860,8 @@ func (s *Scanner) scrapeSeries(ctx context.Context, item *models.Item, set tmdb.
                 item.Studios = toJSON(nets)
         }
         item.ProviderIDs = toJSON(map[string]string{"Tmdb": fmt.Sprint(detail.ID)})
+        item.TmdbID = fmt.Sprint(detail.ID)
+        item.TmdbKind = "tv"
         item.Scraped = true
         s.applyTmdbPeople(ctx, item, "tv", detail.ID, set)
         if set.DownloadImgs {
