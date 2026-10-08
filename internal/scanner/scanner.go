@@ -43,7 +43,10 @@ type probeTask struct {
 }
 
 type scrapeTask struct {
-        itemID string
+	itemID string
+	query  string
+	year   int
+	manual bool
 }
 
 // New 创建扫描器并启动工作线程。

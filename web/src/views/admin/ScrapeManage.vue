@@ -73,18 +73,37 @@
       </div>
       <div class="body" v-if="failed.length">
         <table class="tbl">
-          <thead><tr><th>名称</th><th style="width:80px;">类型</th><th>失败原因</th><th style="width:80px;">操作</th></tr></thead>
+          <thead><tr><th>名称</th><th style="width:80px;">类型</th><th>失败原因</th><th style="width:190px;">操作</th></tr></thead>
           <tbody>
             <tr v-for="f in failed" :key="f.ID">
               <td><a href="javascript:void(0)" @click="$router.push('/item/' + f.ID)">{{ f.Name }}</a><div class="muted" style="font-size:11.5px;">{{ f.Path }}</div></td>
               <td>{{ f.Type === 'Series' ? '剧集' : '电影' }}</td>
               <td class="muted" style="font-size:12.5px;">{{ f.Error }}</td>
-              <td><button class="btn ghost sm" @click="scrapeOne(f)">重试</button></td>
+              <td><div style="display:flex;gap:6px;flex-wrap:wrap;">
+                <button class="btn ghost sm" :disabled="workingID === f.ID" @click="scrapeOne(f)">重新获取</button>
+                <button class="btn ghost sm" :disabled="workingID === f.ID" @click="openManual(f)">手动关键词</button>
+              </div></td>
             </tr>
           </tbody>
         </table>
       </div>
       <div class="body" v-else><div class="empty-line">没有失败的刮削任务</div></div>
+    </div>
+
+    <div class="modal-mask" v-if="manualItem" @click.self="closeManual">
+      <div class="manual-modal">
+        <div class="modal-title">手动指定 TMDB 搜索关键词</div>
+        <div class="muted" style="font-size:12.5px;margin-bottom:12px;">{{ manualItem.Name }} · {{ manualItem.Type === 'Series' ? '剧集' : '电影' }}</div>
+        <label>片名或外文原名</label>
+        <input v-model="manualKeyword" maxlength="200" autofocus placeholder="例如：The Matrix" @keyup.enter="submitManual" />
+        <label>上映 / 首播年份（可选）</label>
+        <input v-model.number="manualYear" type="number" min="0" max="2100" placeholder="留空则不限制年份" />
+        <div class="muted" style="font-size:12px;margin-top:8px;">系统将忽略该条目已有 TMDB ID，按关键词重新搜索；找到后会更新该条目的元数据。</div>
+        <div class="modal-actions">
+          <button class="btn ghost" @click="closeManual" :disabled="workingID === manualItem.ID">取消</button>
+          <button class="btn" @click="submitManual" :disabled="!manualKeyword.trim() || workingID === manualItem.ID">{{ workingID === manualItem.ID ? '提交中…' : '搜索并获取元数据' }}</button>
+        </div>
+      </div>
     </div>
 
     <!-- 任务日志 -->
@@ -120,6 +139,10 @@ const failed = ref([])
 const logs = ref([])
 const logBox = ref(null)
 const sseOnline = ref(false)
+const manualItem = ref(null)
+const manualKeyword = ref('')
+const manualYear = ref(0)
+const workingID = ref('')
 let es = null
 let timer = null
 
@@ -154,15 +177,48 @@ async function ctrl(action) {
   } catch (e) { toast(errText(e), true) }
 }
 async function retryAll() {
-  const r = await api.admin.scrapeRetry()
-  toast(`已重试 ${r.Queued ?? 0} 个条目`)
-  setTimeout(loadAll, 600)
+  try {
+    const r = await api.admin.scrapeRetry()
+    toast(`已重试 ${r.Queued ?? 0} 个条目`)
+    setTimeout(loadAll, 600)
+  } catch (e) { toast(errText(e), true) }
 }
 async function scrapeOne(f) {
+  await queueScrape(f)
+}
+function openManual(f) {
+  manualItem.value = f
+  manualKeyword.value = f.Name || ''
+  manualYear.value = f.Year || 0
+}
+function closeManual() {
+  if (manualItem.value && workingID.value === manualItem.value.ID) return
+  manualItem.value = null
+}
+async function submitManual() {
+  if (!manualItem.value || !manualKeyword.value.trim()) return
+  const item = manualItem.value
+  const year = Number(manualYear.value) || 0
+  if (!Number.isInteger(year) || year < 0 || year > 2100) {
+    toast('年份需为 0 到 2100 的整数', true)
+    return
+  }
+  const queued = await queueScrape(item, manualKeyword.value.trim(), year)
+  if (queued) closeManual()
+}
+async function queueScrape(f, query = '', year = 0) {
+  workingID.value = f.ID
   try {
-    await api.post('/admin/scrape', { ItemID: f.ID })
-    toast(`「${f.Name}」重新刮削中`)
-  } catch (e) { toast(errText(e), true) }
+    await api.admin.scrapeItem({ ItemID: f.ID, Query: query, Year: year })
+    toast(query ? `已按「${query}」加入刮削队列` : `「${f.Name}」已加入重新获取队列`)
+    setTimeout(loadAll, 600)
+    return true
+  } catch (e) {
+    toast(errText(e), true)
+    return false
+  } finally {
+    workingID.value = ''
+  }
 }
 
 function connectLogs() {
@@ -184,7 +240,25 @@ import { state } from '../../api/client'
 onMounted(() => {
   loadAll()
   connectLogs()
-  timer = setInterval(() => { api.admin.scrapeState().then(s => st.value = s).catch(() => {}) }, 4000)
+  timer = setInterval(() => {
+    api.admin.scrapeState().then(s => st.value = s).catch(() => {})
+    api.admin.scrapeFailed().then(items => failed.value = items).catch(() => {})
+  }, 4000)
 })
 onBeforeUnmount(() => { clearInterval(timer); if (es) es.close() })
 </script>
+
+<style scoped>
+.modal-mask {
+  position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center; justify-content: center;
+  padding: 20px; background: rgba(0, 0, 0, .65);
+}
+.manual-modal {
+  width: min(480px, 100%); padding: 20px; border: 1px solid #2a3040; border-radius: 12px;
+  background: #171a21; box-shadow: 0 18px 60px rgba(0, 0, 0, .4);
+}
+.manual-modal label { display: block; margin: 12px 0 6px; color: #aeb6c2; font-size: 12.5px; }
+.manual-modal input { width: 100%; }
+.modal-title { margin-bottom: 8px; color: #e8eaed; font-size: 16px; font-weight: 700; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+</style>

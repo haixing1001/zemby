@@ -384,20 +384,33 @@ func (a *App) adminTMDB(w http.ResponseWriter, r *http.Request) {
 
 // adminScrape 手动刮削。
 func (a *App) adminScrape(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		a.fail(w, 405, "方法不支持")
+		return
+	}
         var body struct {
                 ItemID string `json:"ItemID"`
+		Query  string `json:"Query"`
+		Year   int    `json:"Year"`
         }
-        _ = bodyJSON(r, &body)
+	if err := bodyJSON(r, &body); err != nil {
+		a.fail(w, 400, "请求体格式错误")
+		return
+	}
         if body.ItemID == "" {
                 a.fail(w, 400, "缺少 ItemID")
                 return
         }
-        go func() {
-                if err := a.scanner.ScrapeNow(strings.ToLower(body.ItemID)); err != nil {
-                        logx.WarnC(logx.CatScrape, "手动刮削失败: %v", err)
-                }
-        }()
-        a.json(w, 200, M{"OK": true, "Message": "刮削任务已开始"})
+	queued, err := a.scanner.QueueScrape(strings.ToLower(body.ItemID), body.Query, body.Year)
+	if err != nil {
+		a.fail(w, 400, err.Error())
+		return
+	}
+	if !queued {
+		a.fail(w, 409, "该条目已在刮削队列中")
+		return
+	}
+	a.json(w, 200, M{"OK": true, "Queued": 1, "Message": "刮削任务已加入队列"})
 }
 
 // adminStatus 后台状态。

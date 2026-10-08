@@ -191,12 +191,48 @@ func (s *Scanner) enqueueProbeTask(task probeTask) bool {
 
 // enqueueScrape 加入刮削队列。
 func (s *Scanner) enqueueScrape(itemID string) bool {
-        probeWaiting.Add(1)
-	if !s.scrapeQueue.Push(scrapeTask{itemID: itemID}) {
+	return s.enqueueScrapeTask(scrapeTask{itemID: itemID})
+}
+
+func (s *Scanner) enqueueScrapeTask(task scrapeTask) bool {
+	probeWaiting.Add(1)
+	if !s.scrapeQueue.Push(task) {
                 probeWaiting.Add(-1)
 		return false
         }
 	return true
+}
+
+// QueueScrape queues an explicit single-item refresh, optionally searching by
+// a caller-provided title and year instead of the item's existing TMDB ID.
+func (s *Scanner) QueueScrape(itemID, query string, year int) (bool, error) {
+	query = strings.TrimSpace(query)
+	if len([]rune(query)) > 200 {
+		return false, fmt.Errorf("关键词不能超过 200 个字符")
+	}
+	if year < 0 || year > 2100 {
+		return false, fmt.Errorf("年份范围无效")
+	}
+	if query == "" && year != 0 {
+		return false, fmt.Errorf("设置年份时必须同时提供关键词")
+	}
+	var item models.Item
+	if err := db.DB.Select("id", "type").First(&item, "id = ?", itemID).Error; err != nil {
+		return false, fmt.Errorf("媒体条目不存在")
+	}
+	if item.Type != "Movie" && item.Type != "Series" {
+		return false, fmt.Errorf("仅支持电影和剧集刮削")
+	}
+	if !s.enqueueScrapeTask(scrapeTask{itemID: itemID, query: query, year: year, manual: true}) {
+		return false, nil
+	}
+	SetScrapeState("running")
+	if query != "" {
+		logx.TaskLog("scrape", "info", "手动关键词刮削已加入队列：「%s」(%d)", query, year)
+	} else {
+		logx.TaskLog("scrape", "info", "条目重新刮削已加入队列：%s", itemID)
+	}
+	return true, nil
 }
 
 func shouldQueueScrape(item *models.Item) bool {
@@ -249,14 +285,14 @@ func (s *Scanner) scrapeWorker() {
 			defer s.scrapeQueue.Done(t.itemID)
                 waitWhilePaused()
                 cfg := LoadScrapeConfig()
-                if !cfg.Enabled {
+			if !cfg.Enabled && !t.manual {
 				return // 刮削总开关关闭：丢弃任务
                 }
-                if !LoadEnhanceConfig().TMDB {
+			if !LoadEnhanceConfig().TMDB && !t.manual {
 				return // 增强功能「启动TMDB」关闭：静默跳过（开启后可重新批量刮削）
                 }
                 ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-                err := s.scrapeItem(ctx, t.itemID)
+		err := s.scrapeItemWithKeyword(ctx, t.itemID, t.query, t.year)
                 cancel()
                 if err != nil {
                         db.DB.Model(&models.Item{}).Where("id = ?", t.itemID).Update("scrape_error", truncateErr(err.Error()))
@@ -285,6 +321,10 @@ func (s *Scanner) ScrapeNow(itemID string) error {
 
 // scrapeItem 刮削单个条目。
 func (s *Scanner) scrapeItem(ctx context.Context, itemID string) error {
+	return s.scrapeItemWithKeyword(ctx, itemID, "", 0)
+}
+
+func (s *Scanner) scrapeItemWithKeyword(ctx context.Context, itemID, query string, queryYear int) error {
         set := tmdb.LoadSettings()
         if !LoadEnhanceConfig().TMDB {
                 return fmt.Errorf("TMDB 未开启（设置-增强功能-启动TMDB）")
@@ -309,6 +349,11 @@ func (s *Scanner) scrapeItem(ctx context.Context, itemID string) error {
         if item.ProviderIDs != "" {
                 _ = json.Unmarshal([]byte(item.ProviderIDs), &ids)
         }
+	if query = strings.TrimSpace(query); query != "" {
+		item.Name = query
+		item.Year = queryYear
+		ids = map[string]string{} // 手动关键词要求重新搜索，而不是沿用旧 TMDB ID。
+	}
         var err error
         switch item.Type {
         case "Movie":

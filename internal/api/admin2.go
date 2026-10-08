@@ -647,6 +647,7 @@ func (a *App) adminAPIList(w http.ResponseWriter, r *http.Request) {
                 {"搜索", "GET", "/emby/Search/Hints?SearchTerm=", "搜索提示"},
                 {"管理", "GET", "/admin/dashboard", "控制台数据（本页）"},
                 {"管理", "GET", "/admin/scrape/failed", "刮削失败清单"},
+                {"管理", "POST", "/admin/scrape", "重新刮削条目；可传 Query/Year 手动搜索 TMDB"},
                 {"管理", "POST", "/admin/ai/test", "AI 识别辅助测试（从文件路径提取关键词）"},
                 {"管理", "GET", "/admin/probe/status", "媒体信息提取状态"},
         }
