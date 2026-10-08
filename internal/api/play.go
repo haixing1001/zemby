@@ -2,19 +2,28 @@
 package api
 
 import (
+	"context"
+	"errors"
         "fmt"
+	"net"
+	"net/netip"
         "net/http"
+	"net/url"
         "os"
         "path/filepath"
         "strings"
         "sync"
         "time"
 
+	"gorm.io/gorm"
+
         "go-emby/internal/auth"
         "go-emby/internal/logx"
         "go-emby/internal/models"
         "go-emby/internal/scanner"
 )
+
+var errDeviceLimit = errors.New("simultaneous device limit reached")
 
 // reserve 设备占用检查（租约 180s）。
 func (a *App) reserve(w http.ResponseWriter, r *http.Request) (ok bool, msg string) {
@@ -24,21 +33,36 @@ func (a *App) reserve(w http.ResponseWriter, r *http.Request) (ok bool, msg stri
         }
         now := time.Now()
         lease := time.Duration(a.cfg.DeviceLeaseSeconds) * time.Second
-        // 清理过期
-        a.db.Where("updated_at < ?", now.Add(-lease)).Delete(&models.PlaySession{})
         // 权限
         if !id.User.Allowed {
                 return false, "管理员已禁止该用户播放"
         }
-        // 设备数
-        var cnt int64
-        a.db.Model(&models.PlaySession{}).Where("user_id = ? AND device_id <> ?", id.User.ID, id.DeviceID).Count(&cnt)
-        if cnt >= int64(id.User.MaxDevices) {
+	if id.User.MaxDevices < 1 {
                 return false, fmt.Sprintf("已达到同时播放设备上限（%d 台）", id.User.MaxDevices)
         }
-        // 记录
-        ps := models.PlaySession{ID: id.User.ID + "|" + id.DeviceID, UserID: id.User.ID, DeviceID: id.DeviceID, UpdatedAt: now}
-        a.db.Save(&ps)
+	// 在同一个事务内清理租约、检查上限并保存新租约，避免同时启动两个播放
+	// 请求时都读到旧计数，从而超过设备上限。
+	err := a.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("updated_at < ?", now.Add(-lease)).Delete(&models.PlaySession{}).Error; err != nil {
+			return err
+		}
+		var cnt int64
+		if err := tx.Model(&models.PlaySession{}).Where("user_id = ? AND device_id <> ?", id.User.ID, id.DeviceID).Count(&cnt).Error; err != nil {
+			return err
+		}
+		if cnt >= int64(id.User.MaxDevices) {
+			return errDeviceLimit
+		}
+		ps := models.PlaySession{ID: id.User.ID + "|" + id.DeviceID, UserID: id.User.ID, DeviceID: id.DeviceID, UpdatedAt: now}
+		return tx.Save(&ps).Error
+	})
+	if errors.Is(err, errDeviceLimit) {
+		return false, fmt.Sprintf("已达到同时播放设备上限（%d 台）", id.User.MaxDevices)
+	}
+	if err != nil {
+		logx.Warn("无法写入播放设备租约: %v", err)
+		return false, "无法检查播放设备限制，请稍后重试"
+	}
         return true, ""
 }
 
@@ -174,6 +198,11 @@ var fastCache = struct {
 // resolveFast 快速路径：限时探测 STRM 地址可达性并跟随重定向取最终直链；
 // 超时/失败回退原始地址，结果缓存 5 秒。
 func (a *App) resolveFast(raw string, waitSec int) string {
+	if waitSec < 1 {
+		waitSec = 1
+	} else if waitSec > 60 {
+		waitSec = 60
+	}
         fastCache.Lock()
         hit, ok := fastCache.m[raw]
         fastCache.Unlock()
@@ -182,9 +211,29 @@ func (a *App) resolveFast(raw string, waitSec int) string {
         }
         loc := raw
         reachable := false
-        client := &http.Client{Timeout: time.Duration(waitSec) * time.Second}
+	checkCtx, cancelCheck := context.WithTimeout(context.Background(), time.Duration(waitSec)*time.Second)
+	defer cancelCheck()
+	if err := validatePublicURL(checkCtx, raw); err != nil {
+		logx.InfoC(logx.CatRedirect, "快速路径跳过非公网地址，回退原始 STRM 地址")
+		return raw
+	}
+	transport := &http.Transport{
+		Proxy: nil, // 不允许环境代理绕过目标地址校验
+		DialContext: safePublicDialContext,
+	}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{
+		Timeout:   time.Duration(waitSec) * time.Second,
+		Transport: transport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return fmt.Errorf("too many redirects")
+			}
+			return validatePublicURL(req.Context(), req.URL.String())
+		},
+	}
         do := func(method string) (string, bool) {
-                req, err := http.NewRequest(method, raw, nil)
+				req, err := http.NewRequestWithContext(checkCtx, method, raw, nil)
                 if err != nil {
                         return "", false
                 }
@@ -231,6 +280,81 @@ func (a *App) resolveFast(raw string, waitSec int) string {
         return loc
 }
 
+var blockedFastPathPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("192.0.0.0/24"),
+	netip.MustParsePrefix("192.0.2.0/24"),
+	netip.MustParsePrefix("198.18.0.0/15"),
+	netip.MustParsePrefix("198.51.100.0/24"),
+	netip.MustParsePrefix("203.0.113.0/24"),
+	netip.MustParsePrefix("2001:db8::/32"),
+}
+
+func isPublicFastPathIP(ip netip.Addr) bool {
+	ip = ip.Unmap()
+	if !ip.IsValid() || !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() ||
+		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
+		return false
+	}
+	for _, prefix := range blockedFastPathPrefixes {
+		if prefix.Contains(ip) {
+			return false
+		}
+	}
+	return true
+}
+
+func validatePublicURL(ctx context.Context, raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+		return fmt.Errorf("invalid HTTP URL")
+	}
+	host := u.Hostname()
+	if ip, err := netip.ParseAddr(strings.Trim(host, "[]")); err == nil {
+		if !isPublicFastPathIP(ip) {
+			return fmt.Errorf("non-public IP address")
+		}
+		return nil
+	}
+	ips, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+	if err != nil || len(ips) == 0 {
+		return fmt.Errorf("cannot resolve host")
+	}
+	for _, ip := range ips {
+		if !isPublicFastPathIP(ip) {
+			return fmt.Errorf("host resolves to a non-public IP address")
+		}
+	}
+	return nil
+}
+
+// safePublicDialContext resolves at connection time and pins the connection to
+// a validated public IP, preventing redirects or DNS rebinding from reaching
+// local/private services.
+func safePublicDialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, err
+	}
+	ips, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+	if err != nil || len(ips) == 0 {
+		return nil, fmt.Errorf("cannot resolve host")
+	}
+	dialer := net.Dialer{}
+	var lastErr error
+	for _, ip := range ips {
+		if !isPublicFastPathIP(ip) {
+			return nil, fmt.Errorf("host resolves to a non-public IP address")
+		}
+		conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
 // subtitleStream 外挂字幕流：/videos/{id}/subtitles/{index}/stream.{fmt}
 func (a *App) subtitleStream(w http.ResponseWriter, r *http.Request, parts []string) {
         // parts: videos/{id}/subtitles/{index}/stream.{fmt} 或 videos/{id}/{msid}/subtitles/{index}/stream.{fmt}
@@ -258,6 +382,10 @@ func (a *App) subtitleStream(w http.ResponseWriter, r *http.Request, parts []str
                 a.fail(w, 404, "字幕不存在")
                 return
         }
+	if !a.pathAllowed(st.Path) {
+		a.fail(w, http.StatusForbidden, "字幕文件不在允许的媒体目录内")
+		return
+	}
         data, err := os.ReadFile(st.Path)
         if err != nil {
                 a.fail(w, 404, "字幕文件不可读")
@@ -311,6 +439,11 @@ func (a *App) transcodeRejected(w http.ResponseWriter, r *http.Request) {
 
 // itemDownload 条目文件下载（管理员）。
 func (a *App) itemDownload(w http.ResponseWriter, r *http.Request, id string) {
+	identity := auth.From(r)
+	if identity == nil || (!identity.IsAPIKey && (identity.User == nil || !identity.User.IsAdmin)) {
+		a.fail(w, http.StatusForbidden, "需要管理员权限")
+		return
+	}
         var src models.MediaSource
         if err := a.db.Where("item_id = ?", strings.ToLower(id)).Order("\"default\" DESC").First(&src).Error; err != nil {
                 a.fail(w, 404, "无可用媒体源")
@@ -366,13 +499,50 @@ func contentTypeFor(name, container string) string {
 
 // pathAllowed 路径是否在媒体根目录内。
 func (a *App) pathAllowed(path string) bool {
-        if len(a.cfg.MediaRoots) == 0 {
-                return true
-        }
-        for _, root := range a.cfg.MediaRoots {
-                if root == path || (len(path) > len(root) && path[:len(root)] == root && path[len(root)] == '/') {
-                        return true
-                }
-        }
-        return false
+	if len(a.cfg.MediaRoots) == 0 {
+		return false
+	}
+	resolved, err := canonicalExistingPath(path)
+	if err != nil {
+		return false
+	}
+	for _, root := range a.cfg.MediaRoots {
+		resolvedRoot, err := canonicalExistingPath(root)
+		if err != nil {
+			continue
+		}
+		rel, err := filepath.Rel(resolvedRoot, resolved)
+		if err != nil {
+			continue
+		}
+		if rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)) {
+			return true
+		}
+	}
+	return false
+}
+
+// canonicalExistingPath normalizes a path and resolves symlinks before checking
+// media-root containment. Callers use this for paths that must already exist.
+func canonicalExistingPath(path string) (string, error) {
+	abs, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return "", err
+	}
+	return filepath.EvalSymlinks(abs)
+}
+
+// isMediaRoot reports whether path resolves to one of the configured roots.
+func (a *App) isMediaRoot(path string) bool {
+	resolved, err := canonicalExistingPath(path)
+	if err != nil {
+		return false
+	}
+	for _, root := range a.cfg.MediaRoots {
+		resolvedRoot, err := canonicalExistingPath(root)
+		if err == nil && resolved == resolvedRoot {
+			return true
+		}
+	}
+	return false
 }

@@ -39,6 +39,7 @@ type probeTask struct {
         itemID   string
         path     string
         mtime    int64
+	size     int64
 }
 
 type scrapeTask struct {
@@ -143,11 +144,19 @@ func (s *Scanner) runScan(lib *models.Library, mode string) {
         seen := seenPaths{}
         var counters struct{ files, newItems, updated, skipped int }
         var removed int
+	scanComplete := true
+		scannedRoots := 0
         defer func() {
                 now := time.Now()
-                task.State, task.EndedAt = "done", &now
+		task.State, task.EndedAt = "done", &now
+		if !scanComplete {
+			task.State = "error"
+		}
                 task.Message = fmt.Sprintf("文件 %d · 新增 %d · 更新 %d · 跳过 %d · 清理 %d · 耗时 %s",
                         counters.files, counters.newItems, counters.updated, counters.skipped, removed, time.Since(start).Round(time.Second))
+			if !scanComplete {
+				task.Message = "扫描不完整；已跳过缺失条目清理 · " + task.Message
+			}
                 db.DB.Save(&task)
                 db.DB.Model(&models.Library{}).Where("id = ?", lib.ID).Update("last_scan", now)
         }()
@@ -160,27 +169,45 @@ func (s *Scanner) runScan(lib *models.Library, mode string) {
                 if root == "" {
                         continue
                 }
-                if _, err := os.Stat(root); err != nil {
+			info, err := os.Stat(root)
+			if err != nil || !info.IsDir() {
+				scanComplete = false
                         logx.WarnC(logx.CatScan, "媒体目录不可访问: %s", root)
                         s.tlog(lib.ID, "warn", "媒体目录不可访问：%s", root)
                         continue
                 }
                 s.tlog(lib.ID, "info", "扫描根目录：%s", root)
+			var scanErr error
                 if lib.Type == "tvshows" {
-                        s.scanTVDir(lib, root, full, seen, &counters)
+				scanErr = s.scanTVDir(lib, root, full, seen, &counters)
                 } else {
-                        s.scanMoviesDir(lib, root, full, seen, &counters)
+				scanErr = s.scanMoviesDir(lib, root, full, seen, &counters)
+			}
+			if scanErr != nil {
+				scanComplete = false
+				logx.WarnC(logx.CatScan, "媒体目录遍历不完整 %s: %v", root, scanErr)
+				s.tlog(lib.ID, "warn", "媒体目录遍历不完整 %s：%v", root, scanErr)
+			} else {
+				scannedRoots++
                 }
                 if s.stopped(lib.ID) {
+				scanComplete = false
                         logx.WarnC(logx.CatScan, "媒体库「%s」扫描被手动停止", lib.Name)
                         s.tlog(lib.ID, "warn", "扫描被手动停止")
                         break
                 }
         }
 
-        // 删除已不存在的条目（文件消失）
-        if full || true { // 增量也校验存在性（开销低）
+	// 缺失清理只在所有根目录都成功遍历后运行。挂载点暂时掉线或权限错误时，
+	// 不能把 Stat/WalkDir 错误当成文件删除，否则会清空库内数据和用户播放状态。
+		if scannedRoots == 0 {
+			scanComplete = false
+		}
+		if scanComplete && scannedRoots > 0 {
                 removed = s.removeMissing(lib.ID, seen)
+	} else {
+		logx.WarnC(logx.CatScan, "媒体库「%s」扫描不完整，跳过缺失条目清理", lib.Name)
+		s.tlog(lib.ID, "warn", "扫描不完整，跳过缺失条目清理")
         }
 
         logx.Scan("媒体库「%s」扫描完成：文件 %d，新增 %d，更新 %d，跳过 %d，清理 %d，耗时 %s",
@@ -196,15 +223,19 @@ type videoFile struct {
         size  int64
 }
 
-func listVideos(root string) []videoFile {
+func listVideos(root string) ([]videoFile, error) {
         var out []videoFile
-        _ = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+	var walkErr error
+	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
                 if err != nil {
+			if walkErr == nil {
+				walkErr = fmt.Errorf("遍历 %s: %w", p, err)
+			}
                         return nil
                 }
                 name := d.Name()
                 if d.IsDir() {
-                        if skipDirs[name] || strings.HasPrefix(name, ".") {
+			if p != root && (skipDirs[name] || strings.HasPrefix(name, ".")) {
                                 return filepath.SkipDir
                         }
                         return nil
@@ -214,26 +245,33 @@ func listVideos(root string) []videoFile {
                 }
                 info, err := d.Info()
                 if err != nil {
+			if walkErr == nil {
+				walkErr = fmt.Errorf("读取文件信息 %s: %w", p, err)
+			}
                         return nil
                 }
-                out = append(out, videoFile{path: p, mtime: info.ModTime().Unix(), size: info.Size()})
+		out = append(out, videoFile{path: p, mtime: info.ModTime().UnixNano(), size: info.Size()})
                 return nil
         })
+	if err != nil && walkErr == nil {
+		walkErr = err
+	}
         sort.Slice(out, func(i, j int) bool { return out[i].path < out[j].path })
-        return out
+	return out, walkErr
 }
 
-func (s *Scanner) scanMoviesDir(lib *models.Library, root string, full bool, seen seenPaths, cnt *struct{ files, newItems, updated, skipped int }) {
-        for _, vf := range listVideos(root) {
+func (s *Scanner) scanMoviesDir(lib *models.Library, root string, full bool, seen seenPaths, cnt *struct{ files, newItems, updated, skipped int }) error {
+	files, walkErr := listVideos(root)
+	for _, vf := range files {
                 if s.stopped(lib.ID) {
-                        return
+			return walkErr
                 }
                 seen[vf.path] = vf.mtime
                 cnt.files++
                 // 增量：未变化跳过重建，但仍刷新字幕与本地图片（轻量）
                 if !full {
                         var ex models.Item
-                        if err := db.DB.Where("library_id = ? AND path = ? AND mtime = ?", lib.ID, vf.path, vf.mtime).First(&ex).Error; err == nil {
+			if err := db.DB.Where("library_id = ? AND path = ? AND mtime = ? AND size = ?", lib.ID, vf.path, vf.mtime, vf.size).First(&ex).Error; err == nil {
                                 cnt.skipped++
                                 s.refreshLight(&ex, vf)
                                 continue
@@ -246,15 +284,17 @@ func (s *Scanner) scanMoviesDir(lib *models.Library, root string, full bool, see
                 }
                 cnt.updated++
         }
+	return walkErr
 }
 
-func (s *Scanner) scanTVDir(lib *models.Library, root string, full bool, seen seenPaths, cnt *struct{ files, newItems, updated, skipped int }) {
+func (s *Scanner) scanTVDir(lib *models.Library, root string, full bool, seen seenPaths, cnt *struct{ files, newItems, updated, skipped int }) error {
         // 第一遍：收集全部视频并按剧集目录分组
         groups := map[string][]videoFile{} // seriesDir -> files
         var order []string
-        for _, vf := range listVideos(root) {
+	files, walkErr := listVideos(root)
+	for _, vf := range files {
                 if s.stopped(lib.ID) {
-                        return
+			return walkErr
                 }
                 sd := FindSeriesDir(vf.path, root)
                 if _, ok := groups[sd]; !ok {
@@ -264,10 +304,11 @@ func (s *Scanner) scanTVDir(lib *models.Library, root string, full bool, seen se
         }
         for _, sd := range order {
                 if s.stopped(lib.ID) {
-                        return
+			return walkErr
                 }
                 s.upsertSeries(lib, sd, groups[sd], full, seen, cnt)
         }
+	return walkErr
 }
 
 // upsertMovie 建立或更新电影条目。
@@ -282,6 +323,7 @@ func (s *Scanner) upsertMovie(lib *models.Library, vf videoFile) error {
         existing, err := findItem(lib.ID, vf.path)
         if err == nil && existing != nil {
                 item.ID = existing.ID
+		item.DateCreated = existing.DateCreated
                 item.Scraped = existing.Scraped
                 item.Poster, item.Backdrop, item.Thumb, item.Logo = existing.Poster, existing.Backdrop, existing.Thumb, existing.Logo
                 item.ProviderIDs, item.Overview = existing.ProviderIDs, existing.Overview
@@ -444,7 +486,7 @@ func (s *Scanner) upsertSeries(lib *models.Library, seriesDir string, files []vi
         for _, e := range episodes {
                 if !full {
                         var ex models.Item
-                        if err := db.DB.Where("library_id = ? AND path = ? AND mtime = ?", lib.ID, e.vf.path, e.vf.mtime).First(&ex).Error; err == nil {
+			if err := db.DB.Where("library_id = ? AND path = ? AND mtime = ? AND size = ?", lib.ID, e.vf.path, e.vf.mtime, e.vf.size).First(&ex).Error; err == nil {
                                 cnt.skipped++
                                 s.refreshLight(&ex, e.vf)
                                 continue
@@ -467,6 +509,7 @@ func (s *Scanner) upsertSeries(lib *models.Library, seriesDir string, files []vi
                 existing, err := findItem(lib.ID, e.vf.path)
                 if err == nil && existing != nil {
                         item.ID = existing.ID
+		item.DateCreated = existing.DateCreated
                         item.Scraped = existing.Scraped
                         item.Poster, item.Thumb = existing.Poster, existing.Thumb
                         item.ProviderIDs, item.Overview = existing.ProviderIDs, existing.Overview
@@ -522,11 +565,13 @@ func (s *Scanner) removeMissing(libID string, seen seenPaths) int {
         removed := 0
         for _, it := range items {
                 if _, ok := seen[it.Path]; !ok {
-                        if _, err := os.Stat(it.Path); err != nil {
+			if _, err := os.Stat(it.Path); os.IsNotExist(err) {
                                 s.persistMediaInfo(it.ID) // 持久化开启时保留媒体信息
                                 s.deleteItemCascade(it.ID)
                                 removed++
                                 s.tlog(libID, "warn", "清理缺失条目「%s」：%s", it.Name, it.Path)
+			} else if err != nil {
+				logx.WarnC(logx.CatScan, "无法确认条目是否缺失，保留记录 %s: %v", it.Path, err)
                         }
                 }
         }
@@ -608,19 +653,14 @@ func (s *Scanner) needsProbe(item *models.Item) bool {
         if strings.HasPrefix(src.Path, "http://") || strings.HasPrefix(src.Path, "https://") {
                 return false // 远程流不探测
         }
-        var cnt int64
-        db.DB.Model(&models.MediaStream{}).Where("item_id = ?", item.ID).Count(&cnt)
-        if cnt == 0 {
-                return true
-        }
-        // 文件变化过则重新探测
-        var p models.Item
-        if db.DB.Select("mtime").First(&p, "id = ?", item.ID).Error == nil {
-                var probed int64
-                db.DB.Model(&models.MediaStream{}).Where("item_id = ? AND is_external = ?", item.ID, false).Count(&probed)
-                return probed == 0
-        }
-        return false
+	if src.ProbedMtime != item.Mtime || src.ProbedSize != item.Size {
+		return true
+	}
+	var cnt int64
+	if err := db.DB.Model(&models.MediaStream{}).Where("item_id = ? AND is_external = ?", item.ID, false).Count(&cnt).Error; err != nil {
+		return false
+	}
+	return cnt == 0
 }
 
 // hasFFprobe 缓存探测工具可用性。

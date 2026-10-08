@@ -62,9 +62,11 @@ let container = 'mp4'
 let runTimeTicks = 0
 let lastReport = 0
 let started = false
+let stopped = false
+let startPromise = Promise.resolve()
 
-function goBack() {
-  reportProgress()
+async function goBack() {
+  await stopPlayback()
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {})
   router.back()
 }
@@ -93,17 +95,26 @@ function onTime() {
 
 async function reportProgress() {
   const v = videoEl.value
-  if (!v || !started) return
+  if (!v || !started || stopped) return
   try {
     await api.playingProgress(id, v.currentTime * 10000000, runTimeTicks, srcId, v.paused)
   } catch {}
 }
 
-async function onEnded() {
+async function stopPlayback() {
+  if (!started || stopped) return
+  stopped = true
+  const v = videoEl.value
+  const pos = v ? v.currentTime * 10000000 : 0
   try {
-    await api.playingStopped(id, runTimeTicks, runTimeTicks, srcId)
-    if (state.userId) await api.markPlayed(state.userId, id).catch(() => {})
+    await startPromise
+    await api.playingStopped(id, pos, runTimeTicks, srcId)
   } catch {}
+}
+
+async function onEnded() {
+  await stopPlayback()
+  if (state.userId) await api.markPlayed(state.userId, id).catch(() => {})
 }
 
 onMounted(async () => {
@@ -133,7 +144,7 @@ onMounted(async () => {
       v.appendChild(track)
       trackIdx++
     }
-    api.playingStart(id, srcId).catch(() => {})
+    startPromise = api.playingStart(id, srcId).catch(() => {})
     started = true
   } catch (e) {
     err.value = e.message || '加载失败'
@@ -141,6 +152,6 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
-  reportProgress()
+  stopPlayback()
 })
 </script>

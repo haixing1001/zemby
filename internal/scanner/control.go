@@ -316,11 +316,11 @@ func (s *Scanner) BatchProbeStart() (int, error) {
                 }
                 var cnt int64
                 db.DB.Model(&models.MediaStream{}).Where("item_id = ? AND is_external = ?", it.ID, false).Count(&cnt)
-                if cnt > 0 {
+				if cnt > 0 && src.ProbedMtime == it.Mtime && src.ProbedSize == it.Size {
                         continue // 已有完整信息
                 }
                 select {
-                case s.probeQueue <- probeTask{sourceID: src.ID, itemID: it.ID, path: src.Path, mtime: it.Mtime}:
+			case s.probeQueue <- probeTask{sourceID: src.ID, itemID: it.ID, path: src.Path, mtime: it.Mtime, size: it.Size}:
                         n++
                 default:
                 }

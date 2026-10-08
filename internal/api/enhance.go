@@ -131,9 +131,13 @@ func (a *App) adminEnhance(w http.ResponseWriter, r *http.Request) {
 func (a *App) adminFavCover(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPost:
+		r.Body = http.MaxBytesReader(w, r.Body, 20<<20)
 		if err := r.ParseMultipartForm(16 << 20); err != nil {
-			a.fail(w, 400, "上传内容无效")
+			a.fail(w, http.StatusRequestEntityTooLarge, "封面上传超过 20 MiB 或内容无效")
 			return
+		}
+		if r.MultipartForm != nil {
+			defer r.MultipartForm.RemoveAll()
 		}
 		f, _, err := r.FormFile("file")
 		if err != nil {

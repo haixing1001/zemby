@@ -4,6 +4,7 @@ package api
 import (
         "encoding/json"
         "fmt"
+	"io"
         "net/http"
         "strings"
         "time"
@@ -341,8 +342,15 @@ func qInt(r *http.Request, name string, def int) int {
 
 // bodyJSON 解析请求体。
 func bodyJSON(r *http.Request, out any) error {
-        dec := json.NewDecoder(r.Body)
-        return dec.Decode(out)
+	const maxJSONBodyBytes = 1 << 20
+	data, err := io.ReadAll(io.LimitReader(r.Body, maxJSONBodyBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(data) > maxJSONBodyBytes {
+		return fmt.Errorf("JSON request body exceeds %d bytes", maxJSONBodyBytes)
+	}
+	return json.Unmarshal(data, out)
 }
 
 // serveWeb Web 静态资源（SPA）。

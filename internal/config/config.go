@@ -19,6 +19,8 @@ type Config struct {
 	ServerName string
 	// 播放设备租约秒数，超过该时间无心跳视为离线
 	DeviceLeaseSeconds int
+	// MaxUploadBytes 请求文件管理上传的上限，防止无界占用磁盘。
+	MaxUploadBytes int64
 }
 
 // Load 从环境变量加载配置。
@@ -28,9 +30,13 @@ func Load() *Config {
 		DataDir:            env("GEMBY_DATA", "/config"),
 		ServerName:         env("GEMBY_SERVER_NAME", "Go Emby Server"),
 		DeviceLeaseSeconds: 180,
+		MaxUploadBytes:     20 << 30,
 	}
 	if n, err := strconv.Atoi(env("DEVICE_LEASE_SECONDS", "180")); err == nil && n >= 30 {
 		c.DeviceLeaseSeconds = n
+	}
+	if n, err := strconv.ParseInt(env("GEMBY_MAX_UPLOAD_BYTES", ""), 10, 64); err == nil && n > 0 {
+		c.MaxUploadBytes = n
 	}
 	roots := env("MEDIA_ROOTS", "/media")
 	for _, r := range splitList(roots) {

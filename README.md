@@ -37,18 +37,17 @@ Go 语言编写的 **Emby 兼容媒体服务器**。提供 Web 管理界面与�
 ## 快速开始（Docker Compose）
 
 ```bash
-mkdir -p go-emby && cd go-emby
-# 下载 compose 文件（或直接使用仓库中的 docker-compose.yml）
-curl -fLO https://raw.githubusercontent.com/your-name/go-emby/main/docker-compose.yml
+git clone https://github.com/haixing1001/zemby.git
+cd zemby
 
 # 准备媒体目录
 mkdir -p media config
 
-# 启动
+# 首次启动前，在 .env 中设置至少 12 个字符的管理员密码：ADMIN_PASSWORD=你的强密码
 docker compose up -d
 ```
 
-访问 `http://服务器IP:8097`，默认账号 `admin`，默认密码 `admin123`（可用环境变量 `GEMBY_ADMIN_PASSWORD` 修改，**请尽快在后台修改密码**）。
+访问 `http://服务器IP:8097`，管理员账号为 `admin`，密码为首次启动前设置的 `ADMIN_PASSWORD`。如果直接运行二进制文件，则首次启动前必须设置 `GEMBY_ADMIN_PASSWORD`（至少 12 个字符）；密码不会写入日志。
 
 登录后进入「后台管理 → 媒体库」添加媒体目录（如 `/media/movies`），创建后自动开始扫描；在「后台管理 → TMDB 刮削」填入 [TMDB API Key](https://www.themoviedb.org/settings/api) 即可自动刮削。
 
@@ -60,8 +59,9 @@ docker compose up -d
 | `GEMBY_DATA` | 数据目录（数据库 / 元数据 / 图片） | `/config` |
 | `MEDIA_ROOTS` | 允许访问的媒体根目录（逗号分隔，扫描与文件管理都限制在其内） | `/media` |
 | `GEMBY_SERVER_NAME` | 服务器名称 | `Go Emby Server` |
-| `GEMBY_ADMIN_PASSWORD` | 首次启动的 admin 密码 | `admin123` |
+| `GEMBY_ADMIN_PASSWORD` | 首次启动必填的 admin 密码（至少 12 个字符） | 无默认值 |
 | `DEVICE_LEASE_SECONDS` | 设备租约秒数（超过无心跳视为离线） | `180` |
+| `GEMBY_MAX_UPLOAD_BYTES` | 文件管理单次上传上限（字节） | `21474836480`（20 GiB） |
 | `TZ` | 时区 | - |
 
 ### 目录结构

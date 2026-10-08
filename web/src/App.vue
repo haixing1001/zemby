@@ -28,14 +28,15 @@
 <script setup>
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { state, logout } from './api/client'
+import { api, state, logout } from './api/client'
 
 const route = useRoute()
 const router = useRouter()
 const showNav = computed(() => route.path !== '/login' && !route.path.startsWith('/admin'))
 
-function doLogout() {
+async function doLogout() {
+  try { await api.post('/Sessions/Logout') } catch {}
   logout()
-  router.push('/login')
+  router.replace('/login')
 }
 </script>

@@ -59,7 +59,7 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { api } from '../../api/client'
+import { api, state } from '../../api/client'
 import { fmtTime, fmtSize, toast, errText } from './util'
 
 const filePath = ref('')
@@ -128,7 +128,9 @@ async function uploadFile(ev) {
   if (!file) return
   const fd = new FormData()
   fd.append('file', file)
-  const res = await fetch(api.admin.uploadUrl(filePath.value), { method: 'POST', body: fd })
+  const res = await fetch(api.admin.uploadUrl(filePath.value), {
+    method: 'POST', headers: { 'X-Emby-Token': state.token }, body: fd
+  })
   if (res.ok) { toast('上传完成'); loadFiles(filePath.value) }
   else toast('上传失败', true)
   ev.target.value = ''

@@ -23,6 +23,10 @@ export function saveAuth(login) {
 
 export function logout() {
   state.token = ''
+  state.userId = ''
+  state.userName = ''
+  state.isAdmin = false
+  state.serverId = ''
   localStorage.removeItem('gemby_token')
   localStorage.removeItem('gemby_userId')
   localStorage.removeItem('gemby_userName')
@@ -31,18 +35,17 @@ export function logout() {
 
 export function imageUrl(itemId, type = 'Primary', maxWidth = 300) {
   if (!itemId) return ''
-  const tag = `${state.token ? '' : ''}`
   return `${BASE}/Items/${itemId}/Images/${type}?MaxWidth=${maxWidth}&api_key=${encodeURIComponent(state.token)}`
 }
 
-async function req(method, path, body, raw = false) {
-  const headers = { 'Content-Type': 'application/json' }
+async function req(method, path, body, raw = false, keepalive = false) {
+  const headers = {}
+  if (body !== undefined) headers['Content-Type'] = 'application/json'
   if (state.token) headers['X-Emby-Token'] = state.token
-  const sep = path.includes('?') ? '&' : '?'
-  const url = `${BASE}${path}${sep}api_key=${encodeURIComponent(state.token)}`
-  const res = await fetch(url, {
+  const res = await fetch(`${BASE}${path}`, {
     method,
     headers,
+    keepalive,
     body: body !== undefined ? JSON.stringify(body) : undefined
   })
   if (res.status === 204) return null
@@ -105,7 +108,7 @@ export const api = {
   playingProgress: (itemId, pos, rt, srcId, paused) =>
     api.post('/Sessions/Playing/Progress', { ItemId: itemId, MediaSourceId: srcId, PositionTicks: Math.floor(pos), RunTimeTicks: rt, IsPaused: paused }),
   playingStopped: (itemId, pos, rt, srcId) =>
-    api.post('/Sessions/Playing/Stopped', { ItemId: itemId, MediaSourceId: srcId, PositionTicks: Math.floor(pos), RunTimeTicks: rt }),
+    req('POST', '/Sessions/Playing/Stopped', { ItemId: itemId, MediaSourceId: srcId, PositionTicks: Math.floor(pos), RunTimeTicks: rt }, false, true),
   markPlayed: (userId, itemId) => api.post(`/Users/${userId}/PlayedItems/${itemId}`),
   markFavorite: (userId, itemId) => api.post(`/Users/${userId}/FavoriteItems/${itemId}`),
 
@@ -145,8 +148,8 @@ export const api = {
     uploadFavoriteCover: (file) => {
       const fd = new FormData()
       fd.append('file', file)
-      return fetch(`${BASE}/admin/favorites/cover?api_key=${encodeURIComponent(state.token)}`, {
-        method: 'POST', body: fd
+      return fetch(`${BASE}/admin/favorites/cover`, {
+        method: 'POST', headers: { 'X-Emby-Token': state.token }, body: fd
       }).then(r => { if (!r.ok) throw new Error('上传失败') ; return r.json() })
     },
     deleteFavoriteCover: () => api.del('/admin/favorites/cover'),
@@ -171,7 +174,7 @@ export const api = {
     deleteUser: (id) => api.del(`/Users/${id}`),
     files: (path) => api.get(`/admin/files?path=${encodeURIComponent(path || '')}`),
     fileOp: (Action, Path, Arg) => api.post('/admin/files/op', { Action, Path, Arg }),
-    uploadUrl: (path) => `${BASE}/admin/files/upload?path=${encodeURIComponent(path)}&api_key=${encodeURIComponent(state.token)}`
+    uploadUrl: (path) => `${BASE}/admin/files/upload?path=${encodeURIComponent(path)}`
   },
 
   streamUrl(itemId, srcId, container) {

@@ -11,6 +11,8 @@ import (
         "sync"
         "time"
 
+	"gorm.io/gorm"
+
         "go-emby/internal/db"
         "go-emby/internal/logx"
         "go-emby/internal/models"
@@ -40,12 +42,7 @@ func (s *Scanner) doProbe(t probeTask) {
                 logx.TaskLog("probe", "warn", "提取失败 %s：%v", t.path, err)
                 return
         }
-        // 替换内嵌流（保留外挂字幕）
-        db.DB.Where("item_id = ? AND is_external = ?", t.itemID, false).Delete(&models.MediaStream{})
         streams := probe.ToStreams(t.sourceID, t.itemID, r)
-        for i := range streams {
-                db.DB.Create(&streams[i])
-        }
         rt := probe.RunTimeTicks(r)
         size := int64(0)
         if v, err := strconv.ParseInt(r.Format.Size, 10, 64); err == nil {
@@ -53,8 +50,28 @@ func (s *Scanner) doProbe(t probeTask) {
         }
         container := firstFormat(r.Format.FormatName)
         updates := map[string]any{"run_time_ticks": rt, "size": size, "container": container}
-        db.DB.Model(&models.Item{}).Where("id = ?", t.itemID).Updates(updates)
-        db.DB.Model(&models.MediaSource{}).Where("id = ?", t.sourceID).Updates(map[string]any{"size": size})
+	if err := db.DB.Transaction(func(tx *gorm.DB) error {
+		// 原子替换内嵌流；失败时保留旧流信息和旧探测指纹，后续扫描可以重试。
+		if err := tx.Where("item_id = ? AND is_external = ?", t.itemID, false).Delete(&models.MediaStream{}).Error; err != nil {
+			return err
+		}
+		for i := range streams {
+			if err := tx.Create(&streams[i]).Error; err != nil {
+				return err
+			}
+		}
+		if err := tx.Model(&models.Item{}).Where("id = ?", t.itemID).Updates(updates).Error; err != nil {
+			return err
+		}
+		return tx.Model(&models.MediaSource{}).Where("id = ?", t.sourceID).Updates(map[string]any{
+			"size": size, "probed_mtime": t.mtime, "probed_size": t.size,
+		}).Error
+	}); err != nil {
+		probeFailed.Add(1)
+		logx.WarnC(logx.CatProbe, "保存探测结果失败 %s: %v", filepath.Base(t.path), err)
+		logx.TaskLog("probe", "error", "保存探测结果失败 %s：%v", t.path, err)
+		return
+	}
         // 刷新图片修订
         var it models.Item
         if db.DB.First(&it, "id = ?", t.itemID).Error == nil {
@@ -156,7 +173,7 @@ func (s *Scanner) tryReuseOnBrowse(item *models.Item) bool {
 // enqueueProbe 加入探测队列（计数等待数）。
 func (s *Scanner) enqueueProbe(item *models.Item, src models.MediaSource, mtime int64) {
         select {
-        case s.probeQueue <- probeTask{sourceID: src.ID, itemID: item.ID, path: src.Path, mtime: mtime}:
+		case s.probeQueue <- probeTask{sourceID: src.ID, itemID: item.ID, path: src.Path, mtime: mtime, size: item.Size}:
                 probeWaiting.Add(1)
         default:
                 logx.WarnC(logx.CatProbe, "探测队列已满，跳过 %s", src.Path)

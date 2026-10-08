@@ -125,6 +125,8 @@ type MediaSource struct {
         Path      string    `gorm:"size:768"` // 文件路径或 http(s) URL
         Container string    `gorm:"size:32"`
         Size      int64
+	ProbedMtime int64 // 最近一次成功探测时文件的修改时间（纳秒）
+	ProbedSize  int64 // 最近一次成功探测时文件的大小
         Name      string    `gorm:"size:512"`
         Default   bool      `gorm:"default:true"`
         CreatedAt time.Time

@@ -2,11 +2,13 @@
 package db
 
 import (
+	"fmt"
         "log"
         "os"
         "path/filepath"
         "sync"
         "time"
+	"unicode/utf8"
 
         "github.com/glebarez/sqlite"
         "golang.org/x/crypto/bcrypt"
@@ -62,7 +64,10 @@ func seed() error {
         if count == 0 {
                 pw := os.Getenv("GEMBY_ADMIN_PASSWORD")
                 if pw == "" {
-                        pw = "admin123"
+			return fmt.Errorf("GEMBY_ADMIN_PASSWORD must be set before first startup")
+		}
+		if utf8.RuneCountInString(pw) < 12 {
+			return fmt.Errorf("GEMBY_ADMIN_PASSWORD must be at least 12 characters")
                 }
                 hash, err := bcrypt.GenerateFromPassword([]byte(pw), bcrypt.DefaultCost)
                 if err != nil {
@@ -76,7 +81,7 @@ func seed() error {
                 if err := DB.Create(&admin).Error; err != nil {
                         return err
                 }
-                log.Printf("[db] 已创建初始管理员 admin（密码 %s）", pw)
+		log.Printf("[db] 已创建初始管理员 admin（请首次登录后检查账户安全设置）")
         }
         return nil
 }

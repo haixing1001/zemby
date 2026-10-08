@@ -114,6 +114,10 @@ func (a *App) fileOp(w http.ResponseWriter, r *http.Request) {
 			a.fail(w, 400, "缺少新名称")
 			return
 		}
+		if a.isMediaRoot(body.Path) {
+			a.fail(w, 400, "不能重命名媒体根目录")
+			return
+		}
 		target := filepath.Join(filepath.Dir(body.Path), safeName(body.Arg))
 		if err := os.Rename(body.Path, target); err != nil {
 			a.fail(w, 500, "重命名失败")
@@ -122,6 +126,10 @@ func (a *App) fileOp(w http.ResponseWriter, r *http.Request) {
 		logxInfo("文件管理：重命名 %s → %s", body.Path, target)
 		a.json(w, 200, M{"OK": true})
 	case "delete":
+		if a.isMediaRoot(body.Path) {
+			a.fail(w, 400, "不能删除媒体根目录")
+			return
+		}
 		if err := os.RemoveAll(body.Path); err != nil {
 			a.fail(w, 500, "删除失败")
 			return
@@ -140,7 +148,17 @@ func (a *App) fileUpload(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, 403, "路径不在允许的媒体目录内")
 		return
 	}
-	r.ParseMultipartForm(64 << 20)
+	r.Body = http.MaxBytesReader(w, r.Body, a.cfg.MaxUploadBytes)
+	if err := r.ParseMultipartForm(64 << 20); err != nil {
+		if r.MultipartForm != nil {
+			_ = r.MultipartForm.RemoveAll()
+		}
+		a.fail(w, http.StatusRequestEntityTooLarge, "上传内容超过大小上限或格式无效")
+		return
+	}
+	if r.MultipartForm != nil {
+		defer r.MultipartForm.RemoveAll()
+	}
 	file, header, err := r.FormFile("file")
 	if err != nil {
 		a.fail(w, 400, "缺少文件")
@@ -148,14 +166,24 @@ func (a *App) fileUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 	target := filepath.Join(dir, safeName(header.Filename))
-	out, err := os.Create(target)
+	out, err := os.CreateTemp(dir, ".upload-*")
 	if err != nil {
 		a.fail(w, 500, "写入失败")
 		return
 	}
-	defer out.Close()
+	tmp := out.Name()
+	defer os.Remove(tmp)
 	if _, err := io.Copy(out, file); err != nil {
+		_ = out.Close()
 		a.fail(w, 500, "写入失败")
+		return
+	}
+	if err := out.Close(); err != nil {
+		a.fail(w, 500, "写入失败")
+		return
+	}
+	if err := os.Rename(tmp, target); err != nil {
+		a.fail(w, 500, "保存上传文件失败")
 		return
 	}
 	logxInfo("文件管理：上传 %s（%d 字节）", target, header.Size)
