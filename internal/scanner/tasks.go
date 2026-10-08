@@ -7,11 +7,13 @@ import (
         "encoding/json"
         "fmt"
         "io"
+        "sort"
 	"os"
         "strings"
         "strconv"
         "sync"
         "time"
+        "unicode"
 
 	"gorm.io/gorm"
 
@@ -819,34 +821,147 @@ func searchWithAIKeywords(ctx context.Context, key, lang string, keywords *AIKey
 	if keywords == nil {
 		return nil, nil
 	}
-	seenResults := make(map[int]struct{})
-	var results []tmdb.SearchResult
 	for _, query := range aiSearchQueries(keywords) {
+		logx.TaskLog("scrape", "info", "AI 关键词调用 TMDB：「%s」(年份 %d)", query, keywords.Year)
 		found, err := search(ctx, key, query, lang, keywords.Year)
 		if err != nil {
-			if len(results) > 0 {
-				return results, nil
-			}
 			return nil, err
 		}
 		if len(found) == 0 && keywords.Year > 0 {
 			found, err = search(ctx, key, query, lang, 0)
 			if err != nil {
-				if len(results) > 0 {
-					return results, nil
-				}
 				return nil, err
 			}
 		}
-		for _, result := range found {
-			if _, ok := seenResults[result.ID]; ok {
-				continue
-			}
-			seenResults[result.ID] = struct{}{}
-			results = append(results, result)
+		if matched := filterAIKeywordResults(found, keywords); len(matched) > 0 {
+			return matched, nil
 		}
 	}
-	return results, nil
+	return nil, nil
+}
+
+type aiScoredResult struct {
+	result tmdb.SearchResult
+	score  float64
+}
+
+// filterAIKeywordResults 只保留标题与 AI 关键词确实相关的结果。TMDB 搜索可能返回
+// 同一年份但完全无关的条目，不能只按年份、海报或评分选择。
+func filterAIKeywordResults(results []tmdb.SearchResult, keywords *AIKeywords) []tmdb.SearchResult {
+	matched := make([]aiScoredResult, 0, len(results))
+	for _, result := range results {
+		titleScore := aiResultTitleScore(result, keywords)
+		if titleScore < 60 {
+			continue
+		}
+		score := titleScore * 100
+		if result.PosterPath != "" {
+			score += 2
+		}
+		score += result.VoteAverage * 0.1
+		matched = append(matched, aiScoredResult{result: result, score: score})
+	}
+	sort.SliceStable(matched, func(i, j int) bool {
+		return matched[i].score > matched[j].score
+	})
+	out := make([]tmdb.SearchResult, 0, len(matched))
+	for i := range matched {
+		out = append(out, matched[i].result)
+	}
+	return out
+}
+
+func aiResultTitleScore(result tmdb.SearchResult, keywords *AIKeywords) float64 {
+	if keywords == nil {
+		return 0
+	}
+	expected := []string{keywords.Title, keywords.OriginalTitle}
+	actual := []string{result.Title, result.OriginalTitle, result.Name, result.OriginalName}
+	best := 0.0
+	for _, want := range expected {
+		want = strings.TrimSpace(want)
+		if want == "" {
+			continue
+		}
+		for _, got := range actual {
+			got = strings.TrimSpace(got)
+			if got == "" {
+				continue
+			}
+			if score := searchTitleSimilarity(want, got); score > best {
+				best = score
+			}
+		}
+	}
+	return best
+}
+
+func searchTitleSimilarity(want, got string) float64 {
+	wantNorm := normalizeSearchTitle(want)
+	gotNorm := normalizeSearchTitle(got)
+	if wantNorm == "" || gotNorm == "" {
+		return 0
+	}
+	if wantNorm == gotNorm {
+		return 100
+	}
+	short, long := wantNorm, gotNorm
+	if len(short) > len(long) {
+		short, long = long, short
+	}
+	if len(short) >= 2 && strings.Contains(long, short) {
+		return 80
+	}
+	wantTokens := searchTitleTokens(want)
+	gotTokens := searchTitleTokens(got)
+	if len(wantTokens) == 0 {
+		return 0
+	}
+	gotSet := make(map[string]struct{}, len(gotTokens))
+	for _, token := range gotTokens {
+		gotSet[token] = struct{}{}
+	}
+	matches := 0
+	for _, token := range wantTokens {
+		if _, ok := gotSet[token]; ok {
+			matches++
+		}
+	}
+	return float64(matches) / float64(len(wantTokens)) * 70
+}
+
+func normalizeSearchTitle(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(s) {
+		if unicode.IsLetter(r) || unicode.IsNumber(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func searchTitleTokens(s string) []string {
+	stopWords := map[string]struct{}{"the": {}, "of": {}, "a": {}, "an": {}, "and": {}, "to": {}}
+	fields := strings.Fields(strings.ToLower(s))
+	tokens := make([]string, 0, len(fields))
+	for _, field := range fields {
+		token := strings.TrimFunc(field, func(r rune) bool {
+			return !unicode.IsLetter(r) && !unicode.IsNumber(r)
+		})
+		if token == "" {
+			continue
+		}
+		if _, ok := stopWords[token]; ok {
+			continue
+		}
+		tokens = append(tokens, token)
+	}
+	if len(tokens) == 0 {
+		if normalized := normalizeSearchTitle(s); normalized != "" {
+			tokens = append(tokens, normalized)
+		}
+	}
+	return tokens
 }
 
 func bestTVResult(results []tmdb.SearchResult, year int) tmdb.SearchResult {
