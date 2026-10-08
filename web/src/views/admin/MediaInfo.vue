@@ -18,7 +18,7 @@
           <label class="switch"><input type="checkbox" v-model="cfg.persist" @change="save" /><span class="track"></span><span class="knob"></span></label>
         </div>
         <div class="set-row" style="flex-direction:column;align-items:stretch;">
-          <div><div class="t">保存目录</div><div class="d">新媒体信息保存在指定目录；已有媒体信息不迁移，仍可继续使用</div></div>
+          <div><div class="t">保存目录</div><div class="d">用于媒体信息、TMDB 元数据与图片；TMDB 内容按 TMDB ID 建目录，已有文件不自动迁移</div></div>
           <div style="display:flex;gap:10px;margin-top:10px;">
             <input v-model="cfg.saveDir" style="flex:1;" />
             <button class="btn sm" @click="save">✓ 保存</button>

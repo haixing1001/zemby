@@ -422,6 +422,22 @@ func (s *Scanner) reuseScrapedMovieByTmdbID(item *models.Item) (bool, error) {
                 item.TmdbKind = source.TmdbKind
                 item.RunTimeTicks = source.RunTimeTicks
                 item.Poster, item.Thumb, item.Backdrop, item.Logo = source.Poster, source.Thumb, source.Backdrop, source.Logo
+                item.Poster = s.localizeTmdbImage(item, item.Poster)
+                item.Thumb = s.localizeTmdbImage(item, item.Thumb)
+                item.Backdrop = s.localizeTmdbImage(item, item.Backdrop)
+                item.Logo = s.localizeTmdbImage(item, item.Logo)
+                metadata := map[string]any{
+                        "tmdbId": item.TmdbID, "tmdbKind": item.TmdbKind, "name": item.Name,
+                        "originalTitle": item.OriginalTitle, "overview": item.Overview, "year": item.Year,
+                        "premiereDate": item.PremiereDate, "communityRating": item.CommunityRating,
+                        "officialRating": item.OfficialRating, "genres": rawJSONField(item.Genres),
+                        "studios": rawJSONField(item.Studios), "people": rawJSONField(item.People),
+                        "tags": rawJSONField(item.Tags), "providerIds": rawJSONField(item.ProviderIDs),
+                        "poster": item.Poster, "thumb": item.Thumb, "backdrop": item.Backdrop, "logo": item.Logo,
+                }
+                if err := s.writeTmdbMetadataFile(item, "version-"+item.ID+".json", metadata); err != nil {
+                        return false, err
+                }
                 item.ImageRev = source.ImageRev
                 item.Scraped = true
                 item.ScrapeError = ""
@@ -432,6 +448,96 @@ func (s *Scanner) reuseScrapedMovieByTmdbID(item *models.Item) (bool, error) {
                 return true, nil
         }
         return false, nil
+}
+
+// tmdbFolderName 返回 TMDB 身份目录名。保留 movie/tv 命名空间，避免不同类型相同编号互相覆盖。
+func tmdbFolderName(item *models.Item) (string, error) {
+        if item == nil {
+                return "", fmt.Errorf("媒体条目为空")
+        }
+        tmdbID := strings.TrimSpace(item.TmdbID)
+        if tmdbID == "" {
+                return "", fmt.Errorf("条目缺少 TMDB ID")
+        }
+        kind := strings.TrimSpace(item.TmdbKind)
+        if kind == "" {
+                kind = models.TmdbKindForItemType(item.Type)
+        }
+        if kind == "" {
+                kind = "movie"
+        }
+        return "tmdb-" + kind + "-" + tmdbID, nil
+}
+
+func rawJSONField(raw string) any {
+        if strings.TrimSpace(raw) == "" {
+                return nil
+        }
+        return json.RawMessage(raw)
+}
+
+// writeTmdbMetadataFile 将 TMDB 元数据写入“提取媒体信息设置”的保存目录。
+func (s *Scanner) writeTmdbMetadataFile(item *models.Item, filename string, data any) error {
+        folder, err := tmdbFolderName(item)
+        if err != nil {
+                return err
+        }
+        dir := filepath.Join(LoadProbeConfig().SaveDir, folder)
+        if err := os.MkdirAll(dir, 0o755); err != nil {
+                return err
+        }
+        b, err := json.MarshalIndent(data, "", "  ")
+        if err != nil {
+                return err
+        }
+        target := filepath.Join(dir, filepath.Base(filename))
+        tmp := target + ".tmp"
+        if err := os.WriteFile(tmp, b, 0o644); err != nil {
+                return err
+        }
+        if err := os.Rename(tmp, target); err != nil {
+                _ = os.Remove(tmp)
+                return err
+        }
+        return nil
+}
+
+// downloadTmdbImage 下载图片到当前条目的 TMDB 身份目录。
+func (s *Scanner) downloadTmdbImage(ctx context.Context, item *models.Item, size, path string) (string, error) {
+        folder, err := tmdbFolderName(item)
+        if err != nil {
+                return "", err
+        }
+        return tmdb.DownloadImage(ctx, LoadProbeConfig().SaveDir, folder, size, path)
+}
+
+// localizeTmdbImage 将已有本地图片复制到 TMDB 身份目录；已在目录内或复制失败时保留原路径。
+func (s *Scanner) localizeTmdbImage(item *models.Item, path string) string {
+        if item == nil || !hasImageFile(path) {
+                return path
+        }
+        folder, err := tmdbFolderName(item)
+        if err != nil {
+                return path
+        }
+        dir := filepath.Join(LoadProbeConfig().SaveDir, folder)
+        if rel, err := filepath.Rel(dir, path); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+                return path
+        }
+        data, err := os.ReadFile(path)
+        if err != nil {
+                return path
+        }
+        if err := os.MkdirAll(dir, 0o755); err != nil {
+                return path
+        }
+        target := filepath.Join(dir, filepath.Base(path))
+        if !hasImageFile(target) {
+                if err := os.WriteFile(target, data, 0o644); err != nil {
+                        return path
+                }
+        }
+        return target
 }
 
 func (s *Scanner) scrapeMovie(ctx context.Context, item *models.Item, set tmdb.Settings, ids map[string]string) error {
@@ -640,6 +746,11 @@ func (s *Scanner) applyMovieDetail(ctx context.Context, item *models.Item, d *tm
         item.ProviderIDs = toJSON(ids)
         item.TmdbID = fmt.Sprint(d.ID)
         item.TmdbKind = "movie"
+        if err := s.writeTmdbMetadataFile(item, "metadata.json", d); err != nil {
+                return err
+        }
+        item.Poster = s.localizeTmdbImage(item, item.Poster)
+        item.Backdrop = s.localizeTmdbImage(item, item.Backdrop)
         item.Scraped = true
         s.applyTmdbPeople(ctx, item, "movie", d.ID, set)
 
@@ -649,7 +760,7 @@ func (s *Scanner) applyMovieDetail(ctx context.Context, item *models.Item, d *tm
                         if !hasImageFile(item.Poster) {
                                 posterErr = fmt.Errorf("TMDB 未提供海报路径")
                         }
-                } else if p, err := tmdb.DownloadImage(ctx, s.metaDir(), item.ID, "w500", d.PosterPath); err == nil {
+                } else if p, err := s.downloadTmdbImage(ctx, item, "w500", d.PosterPath); err == nil {
                         item.Poster = p
                 } else {
                         if hasImageFile(item.Poster) {
@@ -659,7 +770,7 @@ func (s *Scanner) applyMovieDetail(ctx context.Context, item *models.Item, d *tm
                         }
                 }
                 if d.BackdropPath != "" {
-                        if b, err := tmdb.DownloadImage(ctx, s.metaDir(), item.ID, "w1280", d.BackdropPath); err == nil {
+                        if b, err := s.downloadTmdbImage(ctx, item, "w1280", d.BackdropPath); err == nil {
                                 item.Backdrop = b
                         } else {
                                 logx.TaskLog("tmdb", "warn", "下载电影背景图失败《%s》：%v", item.Name, err)
@@ -686,6 +797,9 @@ func (s *Scanner) applyTmdbPeople(ctx context.Context, item *models.Item, kind s
 	if err != nil {
 		logx.TaskLog("tmdb", "warn", "获取演职员表失败《%s》：%v", item.Name, err)
 		return
+	}
+	if err := s.writeTmdbMetadataFile(item, "credits.json", map[string]any{"cast": cast, "crew": crew}); err != nil {
+		logx.TaskLog("tmdb", "warn", "保存演职员表元数据失败《%s》：%v", item.Name, err)
 	}
 	people := make([]map[string]string, 0, maxCastMembers+2)
 	for _, c := range cast {
@@ -862,16 +976,21 @@ func (s *Scanner) scrapeSeries(ctx context.Context, item *models.Item, set tmdb.
         item.ProviderIDs = toJSON(map[string]string{"Tmdb": fmt.Sprint(detail.ID)})
         item.TmdbID = fmt.Sprint(detail.ID)
         item.TmdbKind = "tv"
+        if err := s.writeTmdbMetadataFile(item, "metadata.json", detail); err != nil {
+                return err
+        }
+        item.Poster = s.localizeTmdbImage(item, item.Poster)
+        item.Backdrop = s.localizeTmdbImage(item, item.Backdrop)
         item.Scraped = true
         s.applyTmdbPeople(ctx, item, "tv", detail.ID, set)
         if set.DownloadImgs {
-                if p, err := tmdb.DownloadImage(ctx, s.metaDir(), item.ID, "w500", detail.PosterPath); err == nil {
+                if p, err := s.downloadTmdbImage(ctx, item, "w500", detail.PosterPath); err == nil {
                         item.Poster = p
                 } else {
                         logx.TaskLog("tmdb", "warn", "下载剧集海报失败《%s》：%v", item.Name, err)
                 }
                 if detail.BackdropPath != "" {
-                    if b, err := tmdb.DownloadImage(ctx, s.metaDir(), item.ID, "w1280", detail.BackdropPath); err == nil {
+                    if b, err := s.downloadTmdbImage(ctx, item, "w1280", detail.BackdropPath); err == nil {
                         item.Backdrop = b
                     } else {
                         logx.TaskLog("tmdb", "warn", "下载剧集背景图失败《%s》：%v", item.Name, err)
@@ -907,8 +1026,11 @@ func (s *Scanner) scrapeSeasons(ctx context.Context, series *models.Item, set tm
                         season.Name = fmt.Sprintf("第 %d 季", season.ParentIndexNumber)
                 }
                 season.Overview = resp.Overview
+                if err := s.writeTmdbMetadataFile(series, fmt.Sprintf("season-%d.json", season.ParentIndexNumber), resp); err != nil {
+                        logx.TaskLog("scrape", "warn", "保存季元数据失败《%s》第 %d 季：%v", series.Name, season.ParentIndexNumber, err)
+                }
                 if set.DownloadImgs && resp.PosterPath != "" {
-                        if p, err := tmdb.DownloadImage(ctx, s.metaDir(), season.ID, "w500", resp.PosterPath); err == nil {
+                        if p, err := s.downloadTmdbImage(ctx, series, "w500", resp.PosterPath); err == nil {
                                 season.Poster = p
                         } else {
                                 logx.TaskLog("tmdb", "warn", "下载季海报失败《%s》第 %d 季：%v", series.Name, season.ParentIndexNumber, err)
@@ -931,6 +1053,9 @@ func (s *Scanner) scrapeSeasons(ctx context.Context, series *models.Item, set tm
                                                 ep.Name = fmt.Sprintf("第 %d 集", e.EpisodeNumber)
                                         }
                                         ep.Overview = e.Overview
+                                        if err := s.writeTmdbMetadataFile(series, fmt.Sprintf("episode-s%02de%02d.json", e.SeasonNumber, e.EpisodeNumber), e); err != nil {
+                                                logx.TaskLog("scrape", "warn", "保存集元数据失败《%s》 S%02dE%02d：%v", series.Name, e.SeasonNumber, e.EpisodeNumber, err)
+                                        }
                                         if e.AirDate != "" && len(e.AirDate) >= 10 {
                                                 if t, err := time.Parse("2006-01-02", e.AirDate[:10]); err == nil {
                                                         ep.PremiereDate = &t
@@ -940,7 +1065,7 @@ func (s *Scanner) scrapeSeasons(ctx context.Context, series *models.Item, set tm
                                                 ep.RunTimeTicks = int64(e.Runtime) * 60 * 10000000
                                         }
                                         if set.DownloadImgs && e.StillPath != "" {
-                                                if p, err := tmdb.DownloadImage(ctx, s.metaDir(), ep.ID, "w300", e.StillPath); err == nil {
+                                                if p, err := s.downloadTmdbImage(ctx, series, "w300", e.StillPath); err == nil {
                                                         ep.Thumb = p
                                                 } else {
                                                         logx.TaskLog("tmdb", "warn", "下载剧集缩略图失败《%s》：%v", ep.Name, err)
@@ -954,7 +1079,7 @@ func (s *Scanner) scrapeSeasons(ctx context.Context, series *models.Item, set tm
         }
 }
 
-// metaDir 元数据目录。
-func (s *Scanner) metaDir() string { return s.cfg.MetaDir() }
+// metaDir 元数据目录：与「提取媒体信息设置」的保存目录保持一致。
+func (s *Scanner) metaDir() string { return LoadProbeConfig().SaveDir }
 
 func mpaa(status string) string { return "" }
