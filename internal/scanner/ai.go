@@ -24,7 +24,13 @@ type AIConfig struct {
         BaseURL string `json:"baseUrl"` // OpenAI 兼容 API 根地址（如 https://api.deepseek.com/v1）
         APIKey  string `json:"apiKey"`  // API Key
         Model   string `json:"model"`   // 模型名（如 deepseek-chat / glm-4-flash / gpt-4o-mini）
+	MaxTokens int   `json:"maxTokens"` // 最大输出 token 数
 }
+
+const (
+	defaultAIOutputTokens = 512
+	maxAIOutputTokens     = 4096
+)
 
 // DefaultAIConfig 默认配置。
 func DefaultAIConfig() AIConfig {
@@ -32,6 +38,7 @@ func DefaultAIConfig() AIConfig {
                 Enabled: false,
                 BaseURL: "https://api.openai.com/v1",
                 Model:   "gpt-4o-mini",
+			MaxTokens: defaultAIOutputTokens,
         }
 }
 
@@ -41,6 +48,12 @@ func LoadAIConfig() AIConfig {
         kvGet("ai_config", &c)
         c.BaseURL = strings.TrimRight(strings.TrimSpace(c.BaseURL), "/")
         c.Model = strings.TrimSpace(c.Model)
+	if c.MaxTokens < 64 {
+		c.MaxTokens = defaultAIOutputTokens
+	}
+	if c.MaxTokens > maxAIOutputTokens {
+		c.MaxTokens = maxAIOutputTokens
+	}
         return c
 }
 
@@ -150,6 +163,13 @@ func AIExtractKeywords(ctx context.Context, cfg AIConfig, itemType, path, name s
 	if baseURL == "" || strings.TrimSpace(cfg.APIKey) == "" || strings.TrimSpace(cfg.Model) == "" {
                 return nil, fmt.Errorf("AI 配置不完整（地址 / 密钥 / 模型）")
         }
+	maxTokens := cfg.MaxTokens
+	if maxTokens < 64 {
+		maxTokens = defaultAIOutputTokens
+	}
+	if maxTokens > maxAIOutputTokens {
+		maxTokens = maxAIOutputTokens
+	}
         body := map[string]any{
 		"model": strings.TrimSpace(cfg.Model),
                 "messages": []map[string]string{
@@ -157,7 +177,7 @@ func AIExtractKeywords(ctx context.Context, cfg AIConfig, itemType, path, name s
                         {"role": "user", "content": aiUserPrompt(itemType, path, name, year)},
                 },
 		"temperature": 0,
-		"max_tokens":  180,
+		"max_tokens":  maxTokens,
                 "stream":      false,
         }
 	b, err := json.Marshal(body)
@@ -209,10 +229,15 @@ func AIExtractKeywords(ctx context.Context, cfg AIConfig, itemType, path, name s
         if len(cr.Choices) == 0 {
                 return nil, fmt.Errorf("AI 未返回结果")
         }
-	if cr.Choices[0].FinishReason == "length" {
-		return nil, fmt.Errorf("AI 响应被截断，请检查模型的输出长度限制")
+	keywords, parseErr := parseAIKeywords(cr.Choices[0].Message.Content)
+	if parseErr == nil {
+		return keywords, nil
 	}
-        return parseAIKeywords(cr.Choices[0].Message.Content)
+	switch strings.ToLower(cr.Choices[0].FinishReason) {
+	case "length", "max_tokens":
+		return nil, fmt.Errorf("AI 响应达到输出上限（%d tokens）；请提高 AI 设置中的最大输出 tokens，或提高模型服务端限制", maxTokens)
+	}
+	return nil, parseErr
 }
 
 // parseAIKeywords 从 AI 回复文本中解析关键词 JSON（容忍 markdown 围栏与多余文字）。

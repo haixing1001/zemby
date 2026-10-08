@@ -25,6 +25,7 @@ func (a *App) adminAI(w http.ResponseWriter, r *http.Request) {
 			"APIKey":  masked,
 			"HasKey":  cfg.APIKey != "",
 			"Model":   cfg.Model,
+			"MaxTokens": cfg.MaxTokens,
 		})
 		return
 	}
@@ -37,6 +38,7 @@ func (a *App) adminAI(w http.ResponseWriter, r *http.Request) {
 		BaseURL *string `json:"BaseURL"`
 		APIKey  *string `json:"APIKey"`
 		Model   *string `json:"Model"`
+		MaxTokens *int  `json:"MaxTokens"`
 	}
 	if err := bodyJSON(r, &b); err != nil {
 		a.fail(w, 400, "请求体格式错误")
@@ -67,6 +69,13 @@ func (a *App) adminAI(w http.ResponseWriter, r *http.Request) {
 	}
 	if b.Model != nil {
 		cfg.Model = strings.TrimSpace(*b.Model)
+	}
+	if b.MaxTokens != nil {
+		if *b.MaxTokens < 64 || *b.MaxTokens > 4096 {
+			a.fail(w, 400, "最大输出 tokens 需在 64 到 4096 之间")
+			return
+		}
+		cfg.MaxTokens = *b.MaxTokens
 	}
 	normalizedBaseURL, err := scanner.NormalizeAIBaseURL(cfg.BaseURL)
 	if err != nil {

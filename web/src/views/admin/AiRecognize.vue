@@ -45,6 +45,12 @@
           <input v-model="ai.Model" placeholder="gpt-4o-mini / deepseek-chat / glm-4-flash" style="width:340px;" />
         </div>
 
+        <div class="set-row" style="flex-wrap:wrap;gap:12px;">
+          <div style="min-width:130px;"><div class="t">最大输出 tokens</div></div>
+          <input v-model.number="ai.MaxTokens" type="number" min="64" max="4096" step="64" style="width:180px;" />
+          <span class="muted" style="font-size:12px;">默认 512；若响应被截断，可调高此值并确认模型服务端允许相应输出长度。</span>
+        </div>
+
         <div class="toolbar mt">
           <button class="btn" @click="save" :disabled="saving">{{ saving ? '保存中…' : '保存' }}</button>
         </div>
@@ -95,7 +101,7 @@ const PRESETS = {
   ollama: { BaseURL: 'http://localhost:11434/v1', Model: 'llama3.1' }
 }
 
-const ai = ref({ Enabled: false, BaseURL: '', APIKey: '', HasKey: false, Model: '' })
+const ai = ref({ Enabled: false, BaseURL: '', APIKey: '', HasKey: false, Model: '', MaxTokens: 512 })
 const preset = ref('')
 const saving = ref(false)
 const testing = ref(false)
@@ -122,7 +128,8 @@ async function save() {
       Enabled: ai.value.Enabled,
       BaseURL: ai.value.BaseURL,
       APIKey: ai.value.APIKey,
-      Model: ai.value.Model
+      Model: ai.value.Model,
+      MaxTokens: Number(ai.value.MaxTokens)
     })
     toast('AI 识别辅助设置已保存')
     ai.value = { ...ai.value, ...(await api.admin.ai()) }
