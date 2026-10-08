@@ -132,7 +132,7 @@ GEMBY_DATA=./data MEDIA_ROOTS=./media ./go-emby
 
 ## Docker 多架构镜像
 
-GitHub Actions 工作流（`.github/workflows/docker.yml`）在 push 到 `main` 或打 tag 时自动构建 `linux/amd64` 与 `linux/arm64` 镜像并推送到 GHCR。构建使用 `CGO_ENABLED=0` 纯静态编译（SQLite 驱动为纯 Go 实现），无需目标平台 QEMU 编译工具链。
+GitHub Actions 工作流（`.github/workflows/docker.yml`）在 push 到 `main` 或打 tag 时自动构建 `linux/amd64` 与 `linux/arm64` 镜像并推送到 GHCR。也可以在 GitHub Actions 页面手动运行该工作流；分支运行会生成同名镜像标签（例如 `codex`），默认分支生成 `latest`。构建使用 `CGO_ENABLED=0` 纯静态编译（SQLite 驱动为纯 Go 实现），无需目标平台 QEMU 编译工具链。
 
 手动构建多架构镜像：
 
