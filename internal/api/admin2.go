@@ -491,6 +491,21 @@ func (a *App) adminScrapeRetry(w http.ResponseWriter, r *http.Request) {
         a.json(w, 200, M{"OK": true, "Queued": n})
 }
 
+// adminScrapeIncompleteRetry 一键重刮诊断判定为信息不全的条目。
+func (a *App) adminScrapeIncompleteRetry(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		a.fail(w, 405, "方法不支持")
+		return
+	}
+	n, err := a.scanner.EnqueueIncompleteRescrape()
+	if err != nil {
+		a.fail(w, 500, "查询信息不全条目失败")
+		return
+	}
+	logx.InfoC(logx.CatScrape, "一键重刮信息不全条目：%d 个入队", n)
+	a.json(w, 200, M{"OK": true, "Queued": n})
+}
+
 // ============================================================
 // 媒体信息提取
 // ============================================================
@@ -663,6 +678,7 @@ func (a *App) adminAPIList(w http.ResponseWriter, r *http.Request) {
                 {"管理", "GET", "/admin/dashboard", "控制台数据（本页）"},
                 {"管理", "GET", "/admin/scrape/failed", "刮削失败清单"},
                 {"管理", "GET", "/admin/scrape/incomplete", "缺少图片、演员表或简介的影片诊断清单"},
+                {"管理", "POST", "/admin/scrape/incomplete/retry", "一键重新刮削信息不全的影片"},
                 {"管理", "POST", "/admin/scrape", "重新刮削条目；可传 Query/Year 手动搜索 TMDB"},
                 {"管理", "POST", "/admin/ai/test", "AI 识别辅助测试（从文件路径提取关键词）"},
                 {"管理", "GET", "/admin/probe/status", "媒体信息提取状态"},

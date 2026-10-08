@@ -232,27 +232,7 @@ func IncompleteItems(limit int) ([]map[string]any, int, error) {
 	total := 0
 	for i := range items {
 		item := &items[i]
-		missing := make([]string, 0, 4)
-		if !hasImageFile(item.Poster) {
-			if item.Poster == "" {
-				missing = append(missing, "海报")
-			} else {
-				missing = append(missing, "海报文件")
-			}
-		}
-		if !hasImageFile(item.Backdrop) {
-			if item.Backdrop == "" {
-				missing = append(missing, "背景图")
-			} else {
-				missing = append(missing, "背景图文件")
-			}
-		}
-		if !hasActorMetadata(item.People) {
-			missing = append(missing, "演员表")
-		}
-		if strings.TrimSpace(item.Overview) == "" {
-			missing = append(missing, "简介")
-		}
+		missing := incompleteMissingFields(item)
 		if len(missing) == 0 {
 			continue
 		}
@@ -267,6 +247,63 @@ func IncompleteItems(limit int) ([]map[string]any, int, error) {
 		})
 	}
 	return out, total, nil
+}
+
+// incompleteMissingFields 返回条目缺失的元数据字段，是诊断清单与一键重刮共用的判定标准。
+func incompleteMissingFields(item *models.Item) []string {
+	missing := make([]string, 0, 4)
+	if !hasImageFile(item.Poster) {
+		if item.Poster == "" {
+			missing = append(missing, "海报")
+		} else {
+			missing = append(missing, "海报文件")
+		}
+	}
+	if !hasImageFile(item.Backdrop) {
+		if item.Backdrop == "" {
+			missing = append(missing, "背景图")
+		} else {
+			missing = append(missing, "背景图文件")
+		}
+	}
+	if !hasActorMetadata(item.People) {
+		missing = append(missing, "演员表")
+	}
+	if strings.TrimSpace(item.Overview) == "" {
+		missing = append(missing, "简介")
+	}
+	return missing
+}
+
+// EnqueueIncompleteRescrape 把诊断判定为信息不全的电影/剧集全部加入重新刮削队列。
+// 与 RetryFailedScrape 相同：入队前清除历史失败标记，避免失败清单残留旧记录。
+func (s *Scanner) EnqueueIncompleteRescrape() (int, error) {
+	var items []models.Item
+	if err := db.DB.Select("id, name, type, poster, backdrop, people, overview, scrape_error").
+		Where("type IN ?", []string{"Movie", "Series"}).
+		Order("updated_at DESC").Find(&items).Error; err != nil {
+		return 0, err
+	}
+	ids := make([]string, 0, len(items))
+	for i := range items {
+		if len(incompleteMissingFields(&items[i])) > 0 {
+			ids = append(ids, items[i].ID)
+		}
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	db.DB.Model(&models.Item{}).Where("id IN ?", ids).Update("scrape_error", "")
+	n := 0
+	for _, id := range ids {
+		if s.enqueueScrape(id) {
+			n++
+		}
+	}
+	if n > 0 {
+		SetScrapeState("running")
+	}
+	return n, nil
 }
 
 func hasActorMetadata(raw string) bool {

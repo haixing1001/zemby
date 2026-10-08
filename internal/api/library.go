@@ -93,6 +93,8 @@ func (a *App) adminRoute(w http.ResponseWriter, r *http.Request, p string, parts
                         a.adminScrapeFailed(w, r)
                 case p == "/admin/scrape/incomplete" || p == "/admin/scrape/missing-images":
                         a.adminScrapeIncomplete(w, r)
+                case p == "/admin/scrape/incomplete/retry":
+                        a.adminScrapeIncompleteRetry(w, r)
                 case p == "/admin/scrape/retry":
                         a.adminScrapeRetry(w, r)
                 case p == "/admin/probe/config":

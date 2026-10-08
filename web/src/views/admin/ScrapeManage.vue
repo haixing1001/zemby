@@ -98,6 +98,9 @@
         <span v-if="incompleteItems.TotalRecordCount > incompleteItems.Items.length" class="muted" style="font-size:12px;margin-right:8px;">
           当前显示 {{ incompleteItems.Items.length }} 条
         </span>
+        <button v-if="incompleteItems.TotalRecordCount > 0" class="btn sm" @click="retryIncompleteAll" :disabled="retryingAllIncomplete || !incompleteItems.TMDBConfigured">
+          {{ retryingAllIncomplete ? '入队中…' : '一键重新刮削' }}
+        </button>
         <button class="btn ghost sm" @click="loadIncompleteItems(true)" :disabled="diagnosticLoading">
           {{ diagnosticLoading ? '诊断中…' : '刷新诊断' }}
         </button>
@@ -246,6 +249,23 @@ async function retryAll() {
     toast(`已重试 ${r.Queued ?? 0} 个条目`)
     setTimeout(loadAll, 600)
   } catch (e) { toast(errText(e), true) }
+}
+const retryingAllIncomplete = ref(false)
+async function retryIncompleteAll() {
+  const total = incompleteItems.value.TotalRecordCount || 0
+  if (!total) return
+  if (!confirm(`将把 ${total} 个信息不全的影片全部加入 TMDB 重刮队列（每个条目消耗一次 TMDB 请求），继续？`)) return
+  retryingAllIncomplete.value = true
+  try {
+    const r = await api.admin.scrapeIncompleteRetry()
+    if ((r.Queued ?? 0) > 0) st.value.State = 'running'
+    toast(`已加入重刮队列 ${r.Queued ?? 0} 个条目`)
+    setTimeout(loadAll, 600)
+  } catch (e) {
+    toast(errText(e), true)
+  } finally {
+    retryingAllIncomplete.value = false
+  }
 }
 async function scrapeOne(f) {
   await queueScrape(f)
