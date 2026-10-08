@@ -115,7 +115,7 @@ NFO 支持 `title / originaltitle / plot / rating / year / runtime / genre* / st
 
 ## 从源码构建
 
-依赖：Go 1.23+、Node.js 20+（前端构建）、ffprobe（运行时，可选）
+依赖：Go 1.27+、Node.js 24+（前端构建）、ffprobe（运行时，可选）
 
 ```bash
 # 1. 构建前端
@@ -133,6 +133,8 @@ GEMBY_DATA=./data MEDIA_ROOTS=./media ./go-emby
 ## Docker 多架构镜像
 
 GitHub Actions 工作流（`.github/workflows/docker.yml`）在 push 到 `main`、`codex` 或打 tag 时自动构建 `linux/amd64` 与 `linux/arm64` 镜像并推送到 GHCR。也可以在 GitHub Actions 页面手动运行该工作流；分支运行会生成同名镜像标签（例如 `codex`），默认分支生成 `latest`。构建使用 `CGO_ENABLED=0` 纯静态编译（SQLite 驱动为纯 Go 实现），无需目标平台 QEMU 编译工具链。
+
+Compose 默认拉取 `latest`，可通过 `.env` 中的 `IMAGE_TAG=codex` 固定到 codex 分支镜像。容器停止时会先给服务器最多 30 秒完成优雅关闭和正在传输的请求。
 
 手动构建多架构镜像：
 

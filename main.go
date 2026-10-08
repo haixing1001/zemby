@@ -3,12 +3,17 @@
 package main
 
 import (
+	"context"
+	"errors"
         "fmt"
         "net"
         "net/http"
         "os"
+        "os/signal"
         "path/filepath"
         "strings"
+        "syscall"
+        "time"
 
         "go-emby/internal/api"
         "go-emby/internal/config"
@@ -107,9 +112,36 @@ func main() {
                 fmt.Fprintf(os.Stderr, "监听失败 %s: %v\n", addr, err)
                 os.Exit(1)
         }
+        server := &http.Server{
+                Addr:              addr,
+                Handler:           mux,
+                ReadHeaderTimeout: 10 * time.Second,
+                IdleTimeout:       120 * time.Second,
+                MaxHeaderBytes:    1 << 20,
+        }
         logx.Info("服务已启动: http://%s （账号 admin）", ln.Addr().String())
-        if err := http.Serve(ln, mux); err != nil {
-                fmt.Fprintf(os.Stderr, "服务器退出: %v\n", err)
-                os.Exit(1)
+        shutdownSignal, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+        defer stopSignals()
+        serveErr := make(chan error, 1)
+        go func() { serveErr <- server.Serve(ln) }()
+
+        select {
+        case err := <-serveErr:
+                if err != nil && !errors.Is(err, http.ErrServerClosed) {
+                        fmt.Fprintf(os.Stderr, "服务器退出: %v\n", err)
+                        os.Exit(1)
+                }
+        case <-shutdownSignal.Done():
+                shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+                defer cancel()
+                if err := server.Shutdown(shutdownCtx); err != nil {
+                        fmt.Fprintf(os.Stderr, "优雅关闭超时，强制关闭服务器: %v\n", err)
+                        _ = server.Close()
+                }
+                if err := <-serveErr; err != nil && !errors.Is(err, http.ErrServerClosed) {
+                        fmt.Fprintf(os.Stderr, "服务器退出: %v\n", err)
+                        os.Exit(1)
+                }
+                logx.Info("服务已安全停止")
         }
 }

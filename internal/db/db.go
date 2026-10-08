@@ -41,8 +41,10 @@ func Open(path string) error {
         if err != nil {
                 return err
         }
-        sqlDB.SetMaxOpenConns(1) // SQLite 单写者，避免 busy
-        sqlDB.SetMaxIdleConns(1)
+        // WAL permits concurrent readers while SQLite still serializes writes.
+        // A small pool avoids making every API request wait behind one connection.
+        sqlDB.SetMaxOpenConns(4)
+        sqlDB.SetMaxIdleConns(4)
         if err := d.AutoMigrate(
                 &models.User{}, &models.Token{}, &models.Library{}, &models.Item{},
                 &models.MediaSource{}, &models.MediaStream{}, &models.UserDatum{},

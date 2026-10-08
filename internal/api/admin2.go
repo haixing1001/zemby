@@ -91,41 +91,58 @@ func (a *App) adminDashboard(w http.ResponseWriter, r *http.Request) {
 
         lease := time.Duration(a.cfg.DeviceLeaseSeconds) * time.Second
         var playing []map[string]any
-        var sessions []models.PlaySession
-        a.db.Where("updated_at > ?", time.Now().Add(-lease)).Order("updated_at DESC").Find(&sessions)
+        type playingRow struct {
+                UserID       string    `gorm:"column:user_id"`
+                UserName     string    `gorm:"column:user_name"`
+                ItemID       string    `gorm:"column:item_id"`
+                DeviceID     string    `gorm:"column:device_id"`
+                UpdatedAt    time.Time `gorm:"column:updated_at"`
+                ItemName     string    `gorm:"column:item_name"`
+                ItemType     string    `gorm:"column:item_type"`
+                SeriesName   string    `gorm:"column:series_name"`
+                RuntimeTicks int64     `gorm:"column:runtime_ticks"`
+        }
+        var sessions []playingRow
+        a.db.Table("play_sessions AS ps").
+                Select(`ps.user_id, COALESCE(u.name, '') AS user_name, ps.item_id, ps.device_id,
+                        ps.updated_at, COALESCE(i.name, '') AS item_name, COALESCE(i.type, '') AS item_type,
+                        COALESCE(i.series_name, '') AS series_name, COALESCE(i.run_time_ticks, 0) AS runtime_ticks`).
+                Joins("LEFT JOIN users AS u ON u.id = ps.user_id").
+                Joins("LEFT JOIN items AS i ON i.id = ps.item_id").
+                Where("ps.updated_at > ?", time.Now().Add(-lease)).Order("ps.updated_at DESC").Scan(&sessions)
         for _, ps := range sessions {
-                name, typ, runtime := "", "", int64(0)
-                var it models.Item
-                if a.db.First(&it, "id = ?", ps.ItemID).Error == nil {
-                        name, typ, runtime = it.Name, it.Type, it.RunTimeTicks
-                        if it.Type == "Episode" && it.SeriesName != "" {
-                                name = it.SeriesName + " · " + it.Name
-                        }
-                }
-                var u models.User
-                userName := ""
-                if a.db.Select("name").First(&u, "id = ?", ps.UserID).Error == nil {
-                        userName = u.Name
+                name := ps.ItemName
+                if ps.ItemType == "Episode" && ps.SeriesName != "" {
+                        name = ps.SeriesName + " · " + ps.ItemName
                 }
                 playing = append(playing, map[string]any{
-                        "UserId": ps.UserID, "UserName": userName, "ItemId": ps.ItemID,
-                        "ItemName": name, "ItemType": typ, "DeviceId": ps.DeviceID,
-                        "RuntimeTicks": runtime, "UpdatedAt": embyTime(ps.UpdatedAt),
+                        "UserId": ps.UserID, "UserName": ps.UserName, "ItemId": ps.ItemID,
+                        "ItemName": name, "ItemType": ps.ItemType, "DeviceId": ps.DeviceID,
+                        "RuntimeTicks": ps.RuntimeTicks, "UpdatedAt": embyTime(ps.UpdatedAt),
                 })
         }
 
         // 任务：运行中的扫描 + 最近扫描任务
-        var tasks []models.ScanTask
-        a.db.Order("started_at DESC").Limit(10).Find(&tasks)
+        type taskRow struct {
+                ID        uint      `gorm:"column:id"`
+                Library   string    `gorm:"column:library_name"`
+                Mode      string    `gorm:"column:mode"`
+                State     string    `gorm:"column:state"`
+                Message   string    `gorm:"column:message"`
+                Total     int       `gorm:"column:total"`
+                Done      int       `gorm:"column:done"`
+                StartedAt time.Time `gorm:"column:started_at"`
+        }
+        var tasks []taskRow
+        a.db.Table("scan_tasks AS t").
+                Select(`t.id, COALESCE(l.name, '') AS library_name, t.mode, t.state, t.message,
+                        t.total, t.done, t.started_at`).
+                Joins("LEFT JOIN libraries AS l ON l.id = t.library_id").
+                Order("t.started_at DESC").Limit(10).Scan(&tasks)
         taskList := []map[string]any{}
         for _, t := range tasks {
-                libName := ""
-                var lib models.Library
-                if a.db.Select("name").First(&lib, "id = ?", t.LibraryID).Error == nil {
-                        libName = lib.Name
-                }
                 taskList = append(taskList, map[string]any{
-                        "ID": t.ID, "Library": libName, "Mode": t.Mode, "State": t.State,
+                        "ID": t.ID, "Library": t.Library, "Mode": t.Mode, "State": t.State,
                         "Message": t.Message, "Total": t.Total, "Done": t.Done, "StartedAt": embyTime(t.StartedAt),
                         "Logs": logx.TaskLogSnapshot(fmt.Sprintf("scan:%d", t.ID), 400),
                 })

@@ -1,8 +1,11 @@
 services:
   zemby:
-    image: ghcr.io/haixing1001/zemby:latest
+    image: ghcr.io/haixing1001/zemby:${IMAGE_TAG:-latest}
     container_name: zemby
     restart: unless-stopped
+    init: true
+    pull_policy: always
+    stop_grace_period: 35s
     ports:
       - "8097:8097"        # Web / API 端口
     environment:

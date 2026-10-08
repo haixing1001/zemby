@@ -175,16 +175,25 @@ func (a *App) adminRoute(w http.ResponseWriter, r *http.Request, p string, parts
 func (a *App) adminLibrariesList(w http.ResponseWriter, r *http.Request) {
         var libs []models.Library
         a.db.Order("sort_order, created_at").Find(&libs)
+        type itemCount struct {
+                LibraryID string `gorm:"column:library_id"`
+                Count     int64  `gorm:"column:item_count"`
+        }
+        var counts []itemCount
+        a.db.Model(&models.Item{}).Select("library_id, COUNT(1) AS item_count").
+                Where("type IN ?", []string{"Movie", "Episode"}).Group("library_id").Scan(&counts)
+        countByLibrary := make(map[string]int64, len(counts))
+        for _, row := range counts {
+                countByLibrary[row.LibraryID] = row.Count
+        }
         out := []M{}
         for i := range libs {
                 lib := &libs[i]
-                var items int64
-                a.db.Model(&models.Item{}).Where("library_id = ?", lib.ID).Where("type IN ?", []string{"Movie", "Episode"}).Count(&items)
                 scanning := a.scanner.IsScanning(lib.ID)
                 out = append(out, M{
                         "ID": lib.ID, "Name": lib.Name, "Path": lib.Path, "Type": lib.Type,
                         "EnableTMDB": lib.EnableTMDB, "Language": lib.Language, "SortOrder": lib.SortOrder,
-                        "ItemCount": items, "Scanning": scanning,
+                        "ItemCount": countByLibrary[lib.ID], "Scanning": scanning,
                         "Hidden": lib.Hidden, "HasPoster": lib.Poster != "", "DefaultSort": lib.DefaultSort,
                         "LastScan": lib.LastScan, "DateCreated": lib.CreatedAt,
                 })

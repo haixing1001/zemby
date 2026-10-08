@@ -155,10 +155,12 @@ func (s *Scanner) EnqueueAllUnscraped() int {
         db.DB.Model(&models.Item{}).Where("type IN ? AND scraped = ?", []string{"Movie", "Series"}, false).Pluck("id", &ids)
         n := 0
         for _, id := range ids {
+                probeWaiting.Add(1)
                 select {
                 case s.scrapeQueue <- scrapeTask{itemID: id}:
                         n++
                 default:
+                        probeWaiting.Add(-1)
                 }
         }
         if n > 0 {
@@ -191,10 +193,12 @@ func (s *Scanner) RetryFailedScrape() int {
         db.DB.Model(&models.Item{}).Where("id IN ?", ids).Update("scrape_error", "")
         n := 0
         for _, id := range ids {
+                probeWaiting.Add(1)
                 select {
                 case s.scrapeQueue <- scrapeTask{itemID: id}:
                         n++
                 default:
+                        probeWaiting.Add(-1)
                 }
         }
         if n > 0 {
@@ -286,9 +290,18 @@ func (s *Scanner) probeWorkerPooled(ctx context.Context) {
                                 return
                         }
                         if ctx.Err() != nil {
+                                select {
+                                case s.probeQueue <- t:
+                                        return
+                                default:
+                                        // Keep shutdown/resize bounded if a producer filled the freed slot.
+                                }
+                        }
+                        probeWaiting.Add(-1)
+                        s.doProbe(t)
+                        if ctx.Err() != nil {
                                 return
                         }
-                        s.doProbe(t)
                 }
         }
 }
@@ -298,31 +311,42 @@ func (s *Scanner) BatchProbeStart() (int, error) {
         if !hasFFprobe {
                 return 0, fmt.Errorf("服务器未安装 ffprobe")
         }
-        var ids []string
-        db.DB.Model(&models.Item{}).Where("type IN ?", []string{"Movie", "Episode"}).Pluck("id", &ids)
+        type candidate struct {
+                ItemID      string `gorm:"column:item_id"`
+                SourceID    string `gorm:"column:source_id"`
+                Path        string `gorm:"column:path"`
+                Mtime       int64  `gorm:"column:mtime"`
+                Size        int64  `gorm:"column:size"`
+                ProbedMtime int64  `gorm:"column:probed_mtime"`
+                ProbedSize  int64  `gorm:"column:probed_size"`
+                StreamCount int64  `gorm:"column:stream_count"`
+        }
+        var candidates []candidate
+        err := db.DB.Table("items AS i").
+                Select(`i.id AS item_id, ms.id AS source_id, ms.path AS path,
+                        i.mtime AS mtime, i.size AS size, ms.probed_mtime AS probed_mtime,
+                        ms.probed_size AS probed_size,
+                        (SELECT COUNT(1) FROM media_streams WHERE item_id = i.id AND is_external = ?) AS stream_count`, false).
+                Joins(`JOIN media_sources AS ms ON ms.id = (
+                        SELECT id FROM media_sources WHERE item_id = i.id
+                        ORDER BY "default" DESC, created_at ASC LIMIT 1
+                )`).
+                Where("i.type IN ?", []string{"Movie", "Episode"}).
+                Scan(&candidates).Error
+        if err != nil {
+                return 0, err
+        }
         n := 0
-        for _, id := range ids {
-                var it models.Item
-                if db.DB.First(&it, "id = ?", id).Error != nil {
-                        continue
-                }
-                var src models.MediaSource
-                if db.DB.Where("item_id = ?", it.ID).First(&src).Error != nil {
-                        continue
-                }
-                if strings.HasPrefix(src.Path, "http://") || strings.HasPrefix(src.Path, "https://") {
+        for _, item := range candidates {
+                if strings.HasPrefix(strings.ToLower(item.Path), "http://") || strings.HasPrefix(strings.ToLower(item.Path), "https://") {
                         probeSkipped.Add(1)
                         continue
                 }
-                var cnt int64
-                db.DB.Model(&models.MediaStream{}).Where("item_id = ? AND is_external = ?", it.ID, false).Count(&cnt)
-				if cnt > 0 && src.ProbedMtime == it.Mtime && src.ProbedSize == it.Size {
+                if item.StreamCount > 0 && item.ProbedMtime == item.Mtime && item.ProbedSize == item.Size {
                         continue // 已有完整信息
                 }
-                select {
-			case s.probeQueue <- probeTask{sourceID: src.ID, itemID: it.ID, path: src.Path, mtime: it.Mtime, size: it.Size}:
+                if s.enqueueProbeTask(probeTask{sourceID: item.SourceID, itemID: item.ItemID, path: item.Path, mtime: item.Mtime, size: item.Size}) {
                         n++
-                default:
                 }
         }
         batchRunning.Store(true)
@@ -339,8 +363,10 @@ func (s *Scanner) BatchProbeStop() {
         batchStop.Store(true)
         for {
                 select {
-                case <-s.probeQueue:
+                case task := <-s.probeQueue:
+                        probeWaiting.Add(-1)
                         probeSkipped.Add(1)
+                        forgetProbe(task.itemID)
                 default:
                         return
                 }
@@ -422,6 +448,12 @@ func (s *Scanner) SetRealtime(on bool) {
 var probeDedupMu sync.Mutex
 var probeDedup = map[string]bool{}
 
+func forgetProbe(itemID string) {
+        probeDedupMu.Lock()
+        delete(probeDedup, itemID)
+        probeDedupMu.Unlock()
+}
+
 // TryProbeOnBrowse 浏览详情时若缺流信息则后台补提取（带去重）。
 func (s *Scanner) TryProbeOnBrowse(itemID string) {
         cfg := LoadProbeConfig()
@@ -433,7 +465,14 @@ func (s *Scanner) TryProbeOnBrowse(itemID string) {
                 probeDedupMu.Unlock()
                 return
         }
+        probeDedup[itemID] = true
         probeDedupMu.Unlock()
+        queued := false
+        defer func() {
+                if !queued {
+                        forgetProbe(itemID)
+                }
+        }()
 
         var it models.Item
         if db.DB.First(&it, "id = ?", itemID).Error != nil {
@@ -455,10 +494,7 @@ func (s *Scanner) TryProbeOnBrowse(itemID string) {
         if s.tryReuseOnBrowse(&it) {
                 return
         }
-        probeDedupMu.Lock()
-        probeDedup[itemID] = true
-        probeDedupMu.Unlock()
-        s.enqueueProbe(&it, src, it.Mtime)
+        queued = s.enqueueProbe(&it, src, it.Mtime)
 }
 
 // PreloadNext 播放开始后预提取同剧下一集的媒体信息。

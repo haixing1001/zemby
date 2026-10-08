@@ -118,7 +118,7 @@ func (a *App) serve(w http.ResponseWriter, r *http.Request) {
         // CORS
         w.Header().Set("Access-Control-Allow-Origin", "*")
         w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, HEAD")
-        w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Emby-Token, X-Emby-Authorization, X-Emby-Device-Id, X-MediaBrowser-Token")
+        w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Emby-Token, X-Emby-Authorization, X-Emby-Device-Id, X-MediaBrowser-Token, Range, If-Range")
         if r.Method == http.MethodOptions {
                 w.WriteHeader(http.StatusNoContent)
                 return

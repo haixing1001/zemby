@@ -68,8 +68,205 @@ func (a *App) libDTO(lib *models.Library) M {
         }
 }
 
+type seriesItemCounts struct {
+        Episodes int64
+        Seasons  int64
+}
+
+type itemDTOBatch struct {
+        enhance      scanner.EnhanceConfig
+        sources      map[string][]models.MediaSource
+        streams      map[string][]models.MediaStream
+        movieVersions map[string][]models.Item
+        userData     map[string]models.UserDatum
+        playedSeries map[string]bool
+        seriesCounts map[string]seriesItemCounts
+}
+
+func (a *App) itemDTOs(items []models.Item, detail bool, userID string) []M {
+        if len(items) == 0 {
+                return []M{}
+        }
+        batch := &itemDTOBatch{
+                enhance: scanner.LoadEnhanceConfig(),
+                sources: make(map[string][]models.MediaSource),
+                streams: make(map[string][]models.MediaStream),
+                movieVersions: make(map[string][]models.Item),
+                userData: make(map[string]models.UserDatum),
+                playedSeries: make(map[string]bool),
+                seriesCounts: make(map[string]seriesItemCounts),
+        }
+        itemIDs := make([]string, 0, len(items))
+        mediaIDs := make([]string, 0, len(items))
+        seriesIDs := make([]string, 0, len(items))
+        for i := range items {
+                it := &items[i]
+                itemIDs = append(itemIDs, it.ID)
+                if it.Type == "Movie" || it.Type == "Episode" {
+                        mediaIDs = append(mediaIDs, it.ID)
+                }
+                if it.Type == "Series" {
+                        seriesIDs = append(seriesIDs, it.ID)
+                }
+        }
+        if detail && (batch.enhance.MergeVersionsInLibrary || batch.enhance.MergeVersionsAcrossLibraries) {
+                batch.movieVersions = a.loadMovieVersions(items, batch.enhance)
+                seenMediaIDs := make(map[string]bool, len(mediaIDs))
+                for _, id := range mediaIDs {
+                        seenMediaIDs[id] = true
+                }
+                for _, members := range batch.movieVersions {
+                        for i := range members {
+                                if !seenMediaIDs[members[i].ID] {
+                                        mediaIDs = append(mediaIDs, members[i].ID)
+                                        seenMediaIDs[members[i].ID] = true
+                                }
+                        }
+                }
+        }
+        if len(mediaIDs) > 0 {
+                var sources []models.MediaSource
+                a.db.Where("item_id IN ?", mediaIDs).Order("item_id, \"default\" DESC, created_at").Find(&sources)
+                sourceIDs := make([]string, 0, len(sources))
+                for i := range sources {
+                        batch.sources[sources[i].ItemID] = append(batch.sources[sources[i].ItemID], sources[i])
+                        batch.streams[sources[i].ID] = []models.MediaStream{}
+                        sourceIDs = append(sourceIDs, sources[i].ID)
+                }
+                if detail && len(sourceIDs) > 0 {
+                        var streams []models.MediaStream
+                        a.db.Where("source_id IN ?", sourceIDs).Order("source_id, `index`").Find(&streams)
+                        for i := range streams {
+                                batch.streams[streams[i].SourceID] = append(batch.streams[streams[i].SourceID], streams[i])
+                        }
+                }
+        }
+        if userID != "" {
+                var records []models.UserDatum
+                a.db.Where("user_id = ? AND item_id IN ?", userID, itemIDs).Find(&records)
+                for i := range records {
+                        batch.userData[records[i].ItemID] = records[i]
+                }
+                if len(seriesIDs) > 0 {
+                        type playedCount struct {
+                                SeriesID string `gorm:"column:series_id"`
+                                Count    int64  `gorm:"column:played_count"`
+                        }
+                        var played []playedCount
+                        a.db.Table("user_data AS ud").Select("i.series_id, COUNT(1) AS played_count").
+                                Joins("JOIN items AS i ON i.id = ud.item_id").
+                                Where("ud.user_id = ? AND ud.played = ? AND i.series_id IN ?", userID, true, seriesIDs).
+                                Group("i.series_id").Scan(&played)
+                        for _, row := range played {
+                                batch.playedSeries[row.SeriesID] = row.Count > 0
+                        }
+                }
+        }
+        if batch.enhance.PosterEpisodeBadge && len(seriesIDs) > 0 {
+                type countRow struct {
+                        SeriesID string `gorm:"column:series_id"`
+                        Type     string `gorm:"column:type"`
+                        Count    int64  `gorm:"column:item_count"`
+                }
+                var counts []countRow
+                a.db.Model(&models.Item{}).Select("series_id, type, COUNT(1) AS item_count").
+                        Where("series_id IN ? AND type IN ?", seriesIDs, []string{"Episode", "Season"}).
+                        Group("series_id, type").Scan(&counts)
+                for _, row := range counts {
+                        current := batch.seriesCounts[row.SeriesID]
+                        if row.Type == "Episode" {
+                                current.Episodes = row.Count
+                        } else if row.Type == "Season" {
+                                current.Seasons = row.Count
+                        }
+                        batch.seriesCounts[row.SeriesID] = current
+                }
+        }
+
+        out := make([]M, 0, len(items))
+        for i := range items {
+                out = append(out, a.itemDTOWithBatch(&items[i], detail, userID, batch))
+        }
+        return out
+}
+
+type movieVersionIdentity struct {
+        Year      int
+        Name      string
+        LibraryID string
+}
+
+func (a *App) loadMovieVersions(items []models.Item, enhance scanner.EnhanceConfig) map[string][]models.Item {
+        identities := make(map[movieVersionIdentity]bool)
+        clauses := make([]string, 0)
+        args := make([]any, 0)
+        for i := range items {
+                it := &items[i]
+                if it.Type != "Movie" || strings.TrimSpace(it.Name) == "" {
+                        continue
+                }
+                identity := movieVersionIdentity{Year: it.Year, Name: strings.ToLower(strings.TrimSpace(it.Name))}
+                if !enhance.MergeVersionsAcrossLibraries {
+                        identity.LibraryID = it.LibraryID
+                }
+                if identities[identity] {
+                        continue
+                }
+                identities[identity] = true
+                clause := "(year = ? AND lower(trim(name)) = ?"
+                args = append(args, identity.Year, identity.Name)
+                if identity.LibraryID != "" {
+                        clause += " AND library_id = ?"
+                        args = append(args, identity.LibraryID)
+                }
+                clauses = append(clauses, clause+")")
+        }
+        result := make(map[string][]models.Item)
+        if len(clauses) == 0 {
+                return result
+        }
+        var candidates []models.Item
+        a.db.Where("type = ?", "Movie").Where("("+strings.Join(clauses, " OR ")+")", args...).
+                Order("date_created").Find(&candidates)
+        byIdentity := make(map[movieVersionIdentity][]models.Item, len(identities))
+        for i := range candidates {
+                candidate := candidates[i]
+                identity := movieVersionIdentity{Year: candidate.Year, Name: strings.ToLower(strings.TrimSpace(candidate.Name))}
+                if !enhance.MergeVersionsAcrossLibraries {
+                        identity.LibraryID = candidate.LibraryID
+                }
+                if identities[identity] {
+                        byIdentity[identity] = append(byIdentity[identity], candidate)
+                }
+        }
+        for i := range items {
+                it := &items[i]
+                if it.Type != "Movie" {
+                        continue
+                }
+                identity := movieVersionIdentity{Year: it.Year, Name: strings.ToLower(strings.TrimSpace(it.Name))}
+                if !enhance.MergeVersionsAcrossLibraries {
+                        identity.LibraryID = it.LibraryID
+                }
+                for _, candidate := range byIdentity[identity] {
+                        if candidate.ID == it.ID {
+                                continue
+                        }
+                        result[it.ID] = append(result[it.ID], candidate)
+                        if len(result[it.ID]) == 100 {
+                                break
+                        }
+                }
+        }
+        return result
+}
+
 // itemDTO 条目 DTO。
 func (a *App) itemDTO(it *models.Item, detail bool, userID string) M {
+        return a.itemDTOWithBatch(it, detail, userID, nil)
+}
+
+func (a *App) itemDTOWithBatch(it *models.Item, detail bool, userID string, batch *itemDTOBatch) M {
         d := M{
                 "Id": it.ID, "ServerId": a.serverID, "Name": it.Name,
                 "SortName": it.SortName, "Type": it.Type,
@@ -130,7 +327,12 @@ func (a *App) itemDTO(it *models.Item, detail bool, userID string) M {
                 }
         }
         if len(peopleRaw) > 0 {
-                hideNoImg := scanner.LoadEnhanceConfig().HideActorsNoImage
+                hideNoImg := false
+                if batch != nil {
+                        hideNoImg = batch.enhance.HideActorsNoImage
+                } else {
+                        hideNoImg = scanner.LoadEnhanceConfig().HideActorsNoImage
+                }
                 var p []M
                 for _, pm := range peopleRaw {
                         if pm["Name"] == "" {
@@ -181,10 +383,21 @@ func (a *App) itemDTO(it *models.Item, detail bool, userID string) M {
         case "Series":
                 d["ChildCount"] = 0
                 // 海报显示剧集集数角标：Web 端用 RecursiveItemCount 展示总集数
-                if scanner.LoadEnhanceConfig().PosterEpisodeBadge {
+                posterBadge := false
+                if batch != nil {
+                        posterBadge = batch.enhance.PosterEpisodeBadge
+                } else {
+                        posterBadge = scanner.LoadEnhanceConfig().PosterEpisodeBadge
+                }
+                if posterBadge {
                         var eps, seasons int64
-                        a.db.Model(&models.Item{}).Where("series_id = ? AND type = 'Episode'", it.ID).Count(&eps)
-                        a.db.Model(&models.Item{}).Where("series_id = ? AND type = 'Season'", it.ID).Count(&seasons)
+                        if batch == nil {
+                                a.db.Model(&models.Item{}).Where("series_id = ? AND type = 'Episode'", it.ID).Count(&eps)
+                                a.db.Model(&models.Item{}).Where("series_id = ? AND type = 'Season'", it.ID).Count(&seasons)
+                        } else {
+                                eps = batch.seriesCounts[it.ID].Episodes
+                                seasons = batch.seriesCounts[it.ID].Seasons
+                        }
                         d["ChildCount"] = int(seasons)
                         d["RecursiveItemCount"] = int(eps)
                 }
@@ -212,7 +425,20 @@ func (a *App) itemDTO(it *models.Item, detail bool, userID string) M {
         // 媒体源
         if it.Type == "Movie" || it.Type == "Episode" {
                 var sources []M
-                if it.Type == "Movie" {
+                if batch != nil && it.Type == "Movie" && detail {
+                        sources = a.sourcesFromRows(it, batch.sources[it.ID], true, batch.streams)
+                        for i := range batch.movieVersions[it.ID] {
+                                member := &batch.movieVersions[it.ID][i]
+                                sources = append(sources, a.sourcesFromRows(member, batch.sources[member.ID], true, batch.streams)...)
+                        }
+                } else if batch != nil {
+                        rows := batch.sources[it.ID]
+                        var streams map[string][]models.MediaStream
+                        if detail {
+                                streams = batch.streams
+                        }
+                        sources = a.sourcesFromRows(it, rows, detail, streams)
+                } else if it.Type == "Movie" {
                         sources = a.mergedSources(it, detail) // 多版本合并聚合
                 } else {
                         sources = a.sources(it, detail)
@@ -224,7 +450,7 @@ func (a *App) itemDTO(it *models.Item, detail bool, userID string) M {
         }
 
         // UserData
-        d["UserData"] = a.userData(userID, it)
+        d["UserData"] = a.userDataWithBatch(userID, it, batch)
         return d
 }
 
@@ -239,15 +465,23 @@ func firstTime(t *time.Time) time.Time {
 func (a *App) sources(it *models.Item, detail bool) []M {
         var srcs []models.MediaSource
         a.db.Where("item_id = ?", it.ID).Order("\"default\" DESC, created_at").Find(&srcs)
+        return a.sourcesFromRows(it, srcs, detail, nil)
+}
+
+func (a *App) sourcesFromRows(it *models.Item, srcs []models.MediaSource, detail bool, streams map[string][]models.MediaStream) []M {
         var out []M
         for i, s := range srcs {
-                out = append(out, a.sourceDTO(it, &s, detail, i == 0))
+                out = append(out, a.sourceDTOWithStreams(it, &s, detail, i == 0, streams))
         }
         return out
 }
 
 // sourceDTO MediaSourceInfo。
 func (a *App) sourceDTO(it *models.Item, s *models.MediaSource, detail bool, isDefault bool) M {
+        return a.sourceDTOWithStreams(it, s, detail, isDefault, nil)
+}
+
+func (a *App) sourceDTOWithStreams(it *models.Item, s *models.MediaSource, detail bool, isDefault bool, streamCache map[string][]models.MediaStream) M {
         name := s.Name
         if name == "" {
                 name = it.Name
@@ -298,8 +532,10 @@ func (a *App) sourceDTO(it *models.Item, s *models.MediaSource, detail bool, isD
         ms["DirectStreamUrl"] = direct
         // 详情模式附流信息
         if detail {
-                var streams []models.MediaStream
-                a.db.Where("source_id = ?", s.ID).Order("`index`").Find(&streams)
+                streams, cached := streamCache[s.ID]
+                if streamCache == nil || !cached {
+                        a.db.Where("source_id = ?", s.ID).Order("`index`").Find(&streams)
+                }
                 var ss []M
                 for _, st := range streams {
                         ss = append(ss, streamDTO(&st))
@@ -386,6 +622,10 @@ func isTextSub(c string) bool {
 
 // userData 用户数据。
 func (a *App) userData(userID string, it *models.Item) M {
+        return a.userDataWithBatch(userID, it, nil)
+}
+
+func (a *App) userDataWithBatch(userID string, it *models.Item, batch *itemDTOBatch) M {
         ud := M{
                 "Played": false, "IsFavorite": false, "PlayCount": 0,
                 "PlaybackPositionTicks": 0, "Key": it.ID,
@@ -394,8 +634,13 @@ func (a *App) userData(userID string, it *models.Item) M {
         if userID == "" {
                 return ud
         }
-        var rec models.UserDatum
-        if err := a.db.Where("user_id = ? AND item_id = ?", userID, it.ID).First(&rec).Error; err == nil {
+        rec, found := models.UserDatum{}, false
+        if batch != nil {
+                rec, found = batch.userData[it.ID]
+        } else {
+                found = a.db.Where("user_id = ? AND item_id = ?", userID, it.ID).First(&rec).Error == nil
+        }
+        if found {
                 ud["Played"] = rec.Played
                 ud["IsFavorite"] = rec.Favorite
                 ud["PlayCount"] = rec.PlayCount
@@ -406,10 +651,14 @@ func (a *App) userData(userID string, it *models.Item) M {
         }
         // 剧集聚合：任一集已看
         if it.Type == "Series" {
-                var played int64
-                a.db.Model(&models.UserDatum{}).Where("user_id = ? AND played = ? AND item_id IN (?)",
-                        userID, true, a.db.Model(&models.Item{}).Select("id").Where("series_id = ?", it.ID)).Count(&played)
-                if played > 0 {
+                played := batch != nil && batch.playedSeries[it.ID]
+                if batch == nil {
+                        var count int64
+                        a.db.Model(&models.UserDatum{}).Where("user_id = ? AND played = ? AND item_id IN (?)",
+                                userID, true, a.db.Model(&models.Item{}).Select("id").Where("series_id = ?", it.ID)).Count(&count)
+                        played = count > 0
+                }
+                if played {
                         ud["Played"] = true
                         ud["UnplayedItemCount"] = 0
                 }

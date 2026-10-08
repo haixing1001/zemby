@@ -551,10 +551,7 @@ func (a *App) itemsQuery(w http.ResponseWriter, r *http.Request, mode string) {
                 return
         }
         items, total := a.queryItems(q)
-        out := []M{}
-        for i := range items {
-                out = append(out, a.itemDTO(&items[i], q.Detail, q.UserID))
-        }
+        out := a.itemDTOs(items, q.Detail, q.UserID)
         a.json(w, 200, M{
                 "Items": out, "TotalRecordCount": total,
                 "StartIndex": q.StartIndex,
@@ -574,10 +571,7 @@ func (a *App) itemsLatest(w http.ResponseWriter, r *http.Request) {
                 dbq = dbq.Where("library_id = ?", q.ParentID)
         }
         dbq.Find(&items)
-        out := []M{}
-        for i := range items {
-                out = append(out, a.itemDTO(&items[i], false, q.UserID))
-        }
+        out := a.itemDTOs(items, false, q.UserID)
         a.json(w, 200, out)
 }
 
@@ -617,10 +611,7 @@ func (a *App) itemSimilar(w http.ResponseWriter, r *http.Request, id string) {
                 dbq = dbq.Where("library_id = ?", it.LibraryID)
         }
         dbq.Find(&items)
-        out := []M{}
-        for i := range items {
-                out = append(out, a.itemDTO(&items[i], false, ""))
-        }
+        out := a.itemDTOs(items, false, "")
         a.json(w, 200, M{"Items": out, "TotalRecordCount": len(out), "StartIndex": 0})
 }
 
@@ -633,10 +624,7 @@ func (a *App) showSeasons(w http.ResponseWriter, r *http.Request, seriesID strin
         if idn := auth.From(r); idn != nil && idn.User != nil {
                 uid = idn.User.ID
         }
-        out := []M{}
-        for i := range seasons {
-                out = append(out, a.itemDTO(&seasons[i], false, uid))
-        }
+        out := a.itemDTOs(seasons, false, uid)
         a.json(w, 200, M{"Items": out, "TotalRecordCount": len(out), "StartIndex": 0})
 }
 
@@ -660,10 +648,7 @@ func (a *App) showEpisodes(w http.ResponseWriter, r *http.Request, seriesID stri
         if idn := auth.From(r); idn != nil && idn.User != nil {
                 uid = idn.User.ID
         }
-        out := []M{}
-        for i := range episodes {
-                out = append(out, a.itemDTO(&episodes[i], true, uid))
-        }
+        out := a.itemDTOs(episodes, true, uid)
         a.json(w, 200, M{"Items": out, "TotalRecordCount": len(out), "StartIndex": 0})
 }
 

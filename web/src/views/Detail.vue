@@ -1,6 +1,8 @@
 <template>
   <div v-if="loading" class="spin"></div>
+  <div v-else-if="error && !item.Id" class="empty">{{ error }}</div>
   <div v-else>
+    <div v-if="error" class="empty" role="alert">{{ error }}</div>
     <div class="detail-hero">
       <div class="poster">
         <img v-if="!broken" :src="imageUrl(item.Id, 'Primary', 480)" @error="broken = true" />
@@ -69,20 +71,23 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api, state, imageUrl } from '../api/client'
 
 const route = useRoute()
 const router = useRouter()
-const id = route.params.id
+const id = computed(() => String(route.params.id || ''))
 const loading = ref(true)
+const error = ref('')
 const item = ref({})
 const broken = ref(false)
 const seasons = ref([])
 const episodes = ref([])
 const currentSeason = ref('')
 const episodeCount = ref(0)
+let requestSeq = 0
+let seasonRequestSeq = 0
 
 const genres = computed(() => item.value.Genres || [])
 const people = computed(() => item.value.People || [])
@@ -109,49 +114,92 @@ function fmtRuntime(ticks) {
 }
 
 async function play() {
-  router.push('/play/' + id)
+  router.push('/play/' + id.value)
 }
 async function playEpisode(ep) {
   router.push('/play/' + ep.Id)
 }
 async function toggleFav() {
+  const itemId = id.value
   if (item.value.UserData?.IsFavorite) {
-    await api.del(`/Users/${state.userId}/FavoriteItems/${id}`)
+    await api.del(`/Users/${state.userId}/FavoriteItems/${itemId}`)
     item.value.UserData.IsFavorite = false
   } else {
-    await api.markFavorite(state.userId, id)
+    await api.markFavorite(state.userId, itemId)
     item.value.UserData.IsFavorite = true
   }
 }
 async function markSeen() {
   if (item.value.UserData?.Played) return
-  await api.markPlayed(state.userId, id)
+  await api.markPlayed(state.userId, id.value)
   item.value.UserData.Played = true
 }
 
 async function selectSeason(sid) {
+  const itemId = id.value
+  const request = requestSeq
+  const seasonRequest = ++seasonRequestSeq
   currentSeason.value = sid
-  const d = await api.episodes(id, sid)
-  episodes.value = d.Items || []
+  episodes.value = []
+  try {
+    const d = await api.episodes(itemId, sid)
+    if (request === requestSeq && seasonRequest === seasonRequestSeq && itemId === id.value) {
+      episodes.value = d.Items || []
+    }
+  } catch (e) {
+    if (request === requestSeq && seasonRequest === seasonRequestSeq) error.value = e.message || '剧集加载失败'
+  }
 }
 
-onMounted(async () => {
+async function loadItem(itemId) {
+  const request = ++requestSeq
+  seasonRequestSeq++
+  loading.value = true
+  error.value = ''
+  item.value = {}
+  broken.value = false
+  seasons.value = []
+  episodes.value = []
+  currentSeason.value = ''
+  episodeCount.value = 0
   try {
-    item.value = await api.item(id)
+    const loadedItem = await api.item(itemId)
+    if (request !== requestSeq) return
+    item.value = loadedItem || {}
     if (item.value.Type === 'Series') {
-      const s = await api.seasons(id)
+      const s = await api.seasons(itemId)
+      if (request !== requestSeq) return
       seasons.value = s.Items || []
-      // 统计总集数
-      let cnt = 0
-      for (const sn of seasons.value) {
-        const eps = await api.episodes(id, sn.Id)
-        cnt += (eps.Items || []).length
+      if (seasons.value.length) {
+        currentSeason.value = seasons.value[0].Id
+        const requests = seasons.value.map(sn => api.episodes(itemId, sn.Id).then(
+          value => ({ ok: true, value }),
+          reason => ({ ok: false, reason })
+        ))
+        const first = await requests[0]
+        if (request !== requestSeq) return
+        if (first.ok) {
+          episodes.value = first.value.Items || []
+          episodeCount.value = episodes.value.length
+        } else {
+          error.value = first.reason.message || '首季剧集加载失败'
+        }
+        loading.value = false
+
+        const rest = await Promise.all(requests.slice(1))
+        if (request !== requestSeq) return
+        for (const result of rest) {
+          if (result.ok) episodeCount.value += (result.value.Items || []).length
+          else error.value = '部分剧集加载失败，请切换季后重试'
+        }
       }
-      episodeCount.value = cnt
-      if (seasons.value.length) await selectSeason(seasons.value[0].Id)
     }
+  } catch (e) {
+    if (request === requestSeq) error.value = e.message || '条目加载失败'
   } finally {
-    loading.value = false
+    if (request === requestSeq) loading.value = false
   }
-})
+}
+
+watch(() => route.params.id, value => loadItem(String(value || '')), { immediate: true })
 </script>

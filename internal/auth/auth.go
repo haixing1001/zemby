@@ -6,6 +6,7 @@ import (
         "net/http"
         "regexp"
         "strings"
+        "sync"
         "time"
 
         "golang.org/x/crypto/bcrypt"
@@ -34,6 +35,28 @@ func From(r *http.Request) *Identity {
 }
 
 var authField = regexp.MustCompile(`(?i)(Token|DeviceId|Client|Device|Version)\s*=\s*"([^"]*)"`)
+
+var tokenActivity = struct {
+        sync.Mutex
+        last map[string]time.Time
+}{last: make(map[string]time.Time)}
+
+func shouldUpdateTokenActivity(hash string, now time.Time) bool {
+        tokenActivity.Lock()
+        defer tokenActivity.Unlock()
+        if last, ok := tokenActivity.last[hash]; ok && now.Sub(last) < time.Minute {
+                return false
+        }
+        tokenActivity.last[hash] = now
+        if len(tokenActivity.last) > 4096 {
+                for key, seen := range tokenActivity.last {
+                        if now.Sub(seen) > 5*time.Minute {
+                                delete(tokenActivity.last, key)
+                        }
+                }
+        }
+        return true
+}
 
 // AuthInfo 解析 X-Emby-Authorization / Authorization 头。
 func AuthInfo(r *http.Request) (client, device, deviceID, version, token string) {
@@ -135,8 +158,11 @@ func Middleware(next http.Handler, isPublic func(*http.Request) bool) http.Handl
                 }
                 // 更新 token 活跃时间
                 if !id.IsAPIKey {
-                        db.DB.Model(&models.Token{}).Where("hash = ?", models.HashToken(id.Token)).
-                                Update("last_seen", time.Now())
+                        now := time.Now()
+                        hash := models.HashToken(id.Token)
+                        if shouldUpdateTokenActivity(hash, now) {
+                                db.DB.Model(&models.Token{}).Where("hash = ?", hash).Update("last_seen", now)
+                        }
                 }
                 next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, id)))
         })

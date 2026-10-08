@@ -358,7 +358,10 @@ func (s *Scanner) applyLocalImages(item *models.Item, dir, base string) {
         }
         if changed {
                 item.ImageRev = imageRev(item.Poster, item.Backdrop, item.Thumb, item.Logo)
-                db.DB.Save(item)
+                db.DB.Model(&models.Item{}).Where("id = ?", item.ID).Updates(map[string]any{
+                        "poster": item.Poster, "backdrop": item.Backdrop,
+                        "thumb": item.Thumb, "logo": item.Logo, "image_rev": item.ImageRev,
+                })
                 var found []string
                 if item.Poster != "" {
                         found = append(found, "海报")

@@ -17,9 +17,10 @@
       </select>
     </div>
 
+    <div v-if="error" class="empty" role="alert">{{ error }}</div>
     <div v-if="loading" class="spin"></div>
-    <div v-else-if="!items.length" class="empty">没有找到条目</div>
-    <div v-else class="grid">
+    <div v-else-if="!items.length && !error" class="empty">没有找到条目</div>
+    <div v-else-if="items.length" class="grid">
       <div v-for="it in items" :key="it.Id" class="poster-card" @click="router.push('/item/' + it.Id)">
         <div class="poster">
           <img v-if="imgOk(it)" :src="posterUrl(it, 300)" @error="fail(it)" loading="lazy" />
@@ -41,56 +42,75 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api, imageUrl, state } from '../api/client'
 
 const route = useRoute()
 const router = useRouter()
-const libId = route.params.id
+const libId = computed(() => String(route.params.id || ''))
 const libName = ref('媒体库')
 const items = ref([])
 const total = ref(0)
 const loading = ref(true)
+const error = ref('')
 const search = ref('')
 const sortBy = ref('SortName')
 const sortOrder = ref('Ascending')
 const broken = ref(new Set())
 const startIndex = ref(0)
 const libDefaultSort = ref(false)
+let loadSeq = 0
+let settingsLibId = ''
+let settingsPromise = null
+let debounceTimer = null
 
 function posterUrl(it, w) { return imageUrl(it.Id, 'Primary', w) }
 function imgOk(it) { return !broken.value.has(it.Id) }
 function fail(it) { broken.value.add(it.Id) }
 function initial(it) { return (it.Name || '?')[0] }
-const defaultApplied = ref(false)
+
+async function applyListSettings(targetLibId) {
+  if (settingsPromise && settingsLibId === targetLibId) return settingsPromise
+  settingsLibId = targetLibId
+  settingsPromise = (async () => {
+    const [viewsResult, enhancementsResult] = await Promise.allSettled([
+      api.views(state.userId), api.admin.enhancements()
+    ])
+    if (targetLibId !== libId.value) return
+
+    const views = viewsResult.status === 'fulfilled' ? viewsResult.value : { Items: [] }
+    const lib = (views.Items || []).find(x => x.Id === targetLibId)
+    if (lib) {
+      libName.value = lib.Name
+      if (lib.DefaultSort) {
+        const [key, order] = String(lib.DefaultSort).split('|')
+        if (key) { sortBy.value = key; libDefaultSort.value = true }
+        if (order) sortOrder.value = order
+      }
+    }
+    const enhancements = enhancementsResult.status === 'fulfilled' ? enhancementsResult.value : {}
+    if (enhancements.SortByReleaseDate && !libDefaultSort.value) {
+      sortBy.value = 'PremiereDate'
+      sortOrder.value = 'Descending'
+    }
+  })()
+  return settingsPromise
+}
 
 async function load(append = false) {
+  const request = ++loadSeq
+  const targetLibId = libId.value
+  if (!append) {
+    startIndex.value = 0
+    error.value = ''
+  }
   loading.value = true
   try {
-    // 首次加载时应用媒体库默认排序
-    if (!append && !defaultApplied.value) {
-      defaultApplied.value = true
-      try {
-        const v = await api.get(`/Users/${state.userId}/Views`)
-        const lib = (v.Items || []).find(x => x.Id === libId)
-        if (lib && lib.DefaultSort) {
-          const [k, o] = String(lib.DefaultSort).split('|')
-          if (k) { sortBy.value = k; libDefaultSort.value = true }
-          if (o) sortOrder.value = o
-        }
-      } catch {}
-      // 增强功能：按发行日期排序媒体库（无库级默认排序时生效，从新到旧）
-      try {
-        const e = await api.admin.enhancements()
-        if (e.SortByReleaseDate && !libDefaultSort.value) {
-          sortBy.value = 'PremiereDate'
-          sortOrder.value = 'Descending'
-        }
-      } catch {}
-    }
+    await applyListSettings(targetLibId)
+    if (request !== loadSeq || targetLibId !== libId.value) return
     const params = {
-      ParentId: libId,
+      ParentId: targetLibId,
       Recursive: 'true',
       IncludeItemTypes: 'Movie,Series',
       SortBy: sortBy.value,
@@ -101,29 +121,47 @@ async function load(append = false) {
     }
     if (search.value) params.SearchTerm = search.value
     const d = await api.items(params)
-    libName.value = d.Items?.length ? libName.value : libName.value
+    if (request !== loadSeq || targetLibId !== libId.value) return
     items.value = append ? [...items.value, ...(d.Items || [])] : (d.Items || [])
     total.value = d.TotalRecordCount || 0
+  } catch (e) {
+    if (request === loadSeq && targetLibId === libId.value) {
+      error.value = e.message || '媒体库加载失败'
+      if (!append) items.value = []
+    }
   } finally {
-    loading.value = false
+    if (request === loadSeq) loading.value = false
   }
 }
 function debouncedLoad() {
-  clearTimeout(debouncedLoad._t)
-  debouncedLoad._t = setTimeout(() => { startIndex.value = 0; load() }, 350)
+  clearTimeout(debounceTimer)
+  debounceTimer = setTimeout(() => load(), 350)
 }
 function more() {
-  startIndex.value += 60
+  if (loading.value) return
+  startIndex.value = items.value.length
   load(true)
 }
 
-onMounted(async () => {
-  // 库名
-  try {
-    const d = await api.get(`/Users/${state.userId}/Views`)
-    const lib = (d.Items || []).find(x => x.Id === libId)
-    if (lib) libName.value = lib.Name
-  } catch {}
+watch(() => route.params.id, () => {
+  clearTimeout(debounceTimer)
+  loadSeq++
+  settingsLibId = ''
+  settingsPromise = null
+  libDefaultSort.value = false
+  sortBy.value = 'SortName'
+  sortOrder.value = 'Ascending'
+  libName.value = '媒体库'
+  items.value = []
+  total.value = 0
+  search.value = ''
+  startIndex.value = 0
+  broken.value = new Set()
   load()
+}, { immediate: true })
+
+onBeforeUnmount(() => {
+  clearTimeout(debounceTimer)
+  loadSeq++
 })
 </script>

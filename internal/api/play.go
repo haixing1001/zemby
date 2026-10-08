@@ -171,8 +171,12 @@ func (a *App) videoStream(w http.ResponseWriter, r *http.Request, id string) {
                 return
         }
         defer f.Close()
-        fi, _ := f.Stat()
-        if fi.IsDir() {
+        fi, err := f.Stat()
+        if err != nil {
+                a.fail(w, 404, "文件信息不可读取")
+                return
+        }
+        if !fi.Mode().IsRegular() {
                 a.fail(w, 400, "不是有效文件")
                 return
         }
@@ -180,6 +184,7 @@ func (a *App) videoStream(w http.ResponseWriter, r *http.Request, id string) {
         w.Header().Set("Content-Type", contentTypeFor(name, src.Container))
         w.Header().Set("Accept-Ranges", "bytes")
         w.Header().Set("Access-Control-Allow-Origin", "*")
+        w.Header().Set("Access-Control-Expose-Headers", "Accept-Ranges, Content-Length, Content-Range, Content-Type, ETag, Last-Modified")
         // http.ServeContent 处理 Range/If-Range
         http.ServeContent(w, r, name, fi.ModTime(), f)
 }

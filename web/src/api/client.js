@@ -42,24 +42,34 @@ async function req(method, path, body, raw = false, keepalive = false) {
   const headers = {}
   if (body !== undefined) headers['Content-Type'] = 'application/json'
   if (state.token) headers['X-Emby-Token'] = state.token
-  const res = await fetch(`${BASE}${path}`, {
-    method,
-    headers,
-    keepalive,
-    body: body !== undefined ? JSON.stringify(body) : undefined
-  })
-  if (res.status === 204) return null
-  if (!res.ok) {
-    let msg = `HTTP ${res.status}`
-    try {
-      const j = await res.json()
-      msg = j.Message || j.error || msg
-    } catch {}
-    throw new Error(msg)
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 30000)
+  try {
+    const res = await fetch(`${BASE}${path}`, {
+      method,
+      headers,
+      keepalive,
+      signal: controller.signal,
+      body: body !== undefined ? JSON.stringify(body) : undefined
+    })
+    if (res.status === 204) return null
+    if (!res.ok) {
+      let msg = `HTTP ${res.status}`
+      try {
+        const j = await res.json()
+        msg = j.Message || j.error || msg
+      } catch {}
+      throw new Error(msg)
+    }
+    const ct = res.headers.get('content-type') || ''
+    if (raw || !ct.includes('json')) return await res.text()
+    return await res.json()
+  } catch (e) {
+    if (e.name === 'AbortError') throw new Error('请求超时，请检查网络后重试')
+    throw e
+  } finally {
+    clearTimeout(timeout)
   }
-  const ct = res.headers.get('content-type') || ''
-  if (raw || !ct.includes('json')) return res.text()
-  return res.json()
 }
 
 export const api = {

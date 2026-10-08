@@ -171,22 +171,30 @@ func (s *Scanner) tryReuseOnBrowse(item *models.Item) bool {
 }
 
 // enqueueProbe 加入探测队列（计数等待数）。
-func (s *Scanner) enqueueProbe(item *models.Item, src models.MediaSource, mtime int64) {
+func (s *Scanner) enqueueProbe(item *models.Item, src models.MediaSource, mtime int64) bool {
+        return s.enqueueProbeTask(probeTask{sourceID: src.ID, itemID: item.ID, path: src.Path, mtime: mtime, size: item.Size})
+}
+
+func (s *Scanner) enqueueProbeTask(task probeTask) bool {
+        probeWaiting.Add(1)
         select {
-		case s.probeQueue <- probeTask{sourceID: src.ID, itemID: item.ID, path: src.Path, mtime: mtime, size: item.Size}:
-                probeWaiting.Add(1)
+		case s.probeQueue <- task:
+                return true
         default:
-                logx.WarnC(logx.CatProbe, "探测队列已满，跳过 %s", src.Path)
-                logx.TaskLog("probe", "warn", "探测队列已满，跳过 %s", src.Path)
+                probeWaiting.Add(-1)
+                logx.WarnC(logx.CatProbe, "探测队列已满，跳过 %s", task.path)
+                logx.TaskLog("probe", "warn", "探测队列已满，跳过 %s", task.path)
+                return false
         }
 }
 
 // enqueueScrape 加入刮削队列。
 func (s *Scanner) enqueueScrape(itemID string) {
+        probeWaiting.Add(1)
         select {
         case s.scrapeQueue <- scrapeTask{itemID: itemID}:
-                probeWaiting.Add(1)
         default:
+                probeWaiting.Add(-1)
         }
 }
 

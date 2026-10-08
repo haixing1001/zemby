@@ -164,6 +164,20 @@ func (s *Scanner) runScan(lib *models.Library, mode string) {
         db.DB.Model(&models.Library{}).Where("id = ?", lib.ID).Update("scanning", true)
         defer db.DB.Model(&models.Library{}).Where("id = ?", lib.ID).Update("scanning", false)
 
+        var existing map[string]models.Item
+        if !full {
+                var cached []models.Item
+                if err := db.DB.Select("id, library_id, type, path, mtime, size, poster, backdrop, thumb, logo").
+                        Where("library_id = ? AND type IN ?", lib.ID, []string{"Movie", "Episode"}).Find(&cached).Error; err != nil {
+                        logx.WarnC(logx.CatScan, "加载媒体库扫描缓存失败，将逐条查询：%v", err)
+                } else {
+                        existing = make(map[string]models.Item, len(cached))
+                        for i := range cached {
+                                existing[cached[i].Path] = cached[i]
+                        }
+                }
+        }
+
         for _, root := range strings.Split(lib.Path, ";") {
                 root = strings.TrimSpace(root)
                 if root == "" {
@@ -179,9 +193,9 @@ func (s *Scanner) runScan(lib *models.Library, mode string) {
                 s.tlog(lib.ID, "info", "扫描根目录：%s", root)
 			var scanErr error
                 if lib.Type == "tvshows" {
-				scanErr = s.scanTVDir(lib, root, full, seen, &counters)
+				scanErr = s.scanTVDir(lib, root, full, seen, existing, &counters)
                 } else {
-				scanErr = s.scanMoviesDir(lib, root, full, seen, &counters)
+				scanErr = s.scanMoviesDir(lib, root, full, seen, existing, &counters)
 			}
 			if scanErr != nil {
 				scanComplete = false
@@ -260,7 +274,7 @@ func listVideos(root string) ([]videoFile, error) {
 	return out, walkErr
 }
 
-func (s *Scanner) scanMoviesDir(lib *models.Library, root string, full bool, seen seenPaths, cnt *struct{ files, newItems, updated, skipped int }) error {
+func (s *Scanner) scanMoviesDir(lib *models.Library, root string, full bool, seen seenPaths, existing map[string]models.Item, cnt *struct{ files, newItems, updated, skipped int }) error {
 	files, walkErr := listVideos(root)
 	for _, vf := range files {
                 if s.stopped(lib.ID) {
@@ -270,8 +284,13 @@ func (s *Scanner) scanMoviesDir(lib *models.Library, root string, full bool, see
                 cnt.files++
                 // 增量：未变化跳过重建，但仍刷新字幕与本地图片（轻量）
                 if !full {
-                        var ex models.Item
-			if err := db.DB.Where("library_id = ? AND path = ? AND mtime = ? AND size = ?", lib.ID, vf.path, vf.mtime, vf.size).First(&ex).Error; err == nil {
+                        ex, ok := existing[vf.path]
+                        if existing == nil {
+                                ok = db.DB.Where("library_id = ? AND path = ? AND mtime = ? AND size = ?", lib.ID, vf.path, vf.mtime, vf.size).First(&ex).Error == nil
+                        } else {
+                                ok = ok && ex.Mtime == vf.mtime && ex.Size == vf.size
+                        }
+                        if ok {
                                 cnt.skipped++
                                 s.refreshLight(&ex, vf)
                                 continue
@@ -287,7 +306,7 @@ func (s *Scanner) scanMoviesDir(lib *models.Library, root string, full bool, see
 	return walkErr
 }
 
-func (s *Scanner) scanTVDir(lib *models.Library, root string, full bool, seen seenPaths, cnt *struct{ files, newItems, updated, skipped int }) error {
+func (s *Scanner) scanTVDir(lib *models.Library, root string, full bool, seen seenPaths, existing map[string]models.Item, cnt *struct{ files, newItems, updated, skipped int }) error {
         // 第一遍：收集全部视频并按剧集目录分组
         groups := map[string][]videoFile{} // seriesDir -> files
         var order []string
@@ -306,7 +325,7 @@ func (s *Scanner) scanTVDir(lib *models.Library, root string, full bool, seen se
                 if s.stopped(lib.ID) {
 			return walkErr
                 }
-                s.upsertSeries(lib, sd, groups[sd], full, seen, cnt)
+                s.upsertSeries(lib, sd, groups[sd], full, seen, existing, cnt)
         }
 	return walkErr
 }
@@ -364,7 +383,7 @@ func (s *Scanner) upsertMovie(lib *models.Library, vf videoFile) error {
 }
 
 // upsertSeries 处理一个剧集目录。
-func (s *Scanner) upsertSeries(lib *models.Library, seriesDir string, files []videoFile, full bool, seen seenPaths, cnt *struct{ files, newItems, updated, skipped int }) {
+func (s *Scanner) upsertSeries(lib *models.Library, seriesDir string, files []videoFile, full bool, seen seenPaths, existingItems map[string]models.Item, cnt *struct{ files, newItems, updated, skipped int }) {
         // 剧集条目
         var series models.Item
         seriesDirty := false
@@ -485,8 +504,13 @@ func (s *Scanner) upsertSeries(lib *models.Library, seriesDir string, files []vi
         // 集条目
         for _, e := range episodes {
                 if !full {
-                        var ex models.Item
-			if err := db.DB.Where("library_id = ? AND path = ? AND mtime = ? AND size = ?", lib.ID, e.vf.path, e.vf.mtime, e.vf.size).First(&ex).Error; err == nil {
+                        ex, ok := existingItems[e.vf.path]
+                        if existingItems == nil {
+                                ok = db.DB.Where("library_id = ? AND path = ? AND mtime = ? AND size = ?", lib.ID, e.vf.path, e.vf.mtime, e.vf.size).First(&ex).Error == nil
+                        } else {
+                                ok = ok && ex.Mtime == e.vf.mtime && ex.Size == e.vf.size
+                        }
+                        if ok {
                                 cnt.skipped++
                                 s.refreshLight(&ex, e.vf)
                                 continue
