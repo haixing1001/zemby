@@ -107,6 +107,7 @@ export const api = {
     return api.get(`/Items?${q.toString()}`)
   },
   item: (id) => api.get(`/Items/${id}`),
+  similarItems: (id, limit = 8) => api.get(`/Items/${id}/Similar?Limit=${limit}`),
   seasons: (seriesId) => api.get(`/Shows/${seriesId}/Seasons`),
   episodes: (seriesId, seasonId) => api.get(`/Shows/${seriesId}/Episodes?SeasonId=${seasonId}`),
   playbackInfo: (id) => api.post(`/Items/${id}/PlaybackInfo`, {}),
@@ -146,6 +147,7 @@ export const api = {
     scrapeState: () => api.get('/admin/scrape/state'),
     scrapeControl: (action) => api.post('/admin/scrape/control', { Action: action }),
     scrapeFailed: () => api.get('/admin/scrape/failed'),
+    scrapeMissingImages: () => api.get('/admin/scrape/missing-images?limit=200'),
     scrapeRetry: () => api.post('/admin/scrape/retry', {}),
     scrapeItem: (body) => api.post('/admin/scrape', body),
     probeConfig: () => api.get('/admin/probe/config'),

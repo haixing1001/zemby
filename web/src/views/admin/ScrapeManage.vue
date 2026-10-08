@@ -90,6 +90,49 @@
       <div class="body" v-else><div class="empty-line">没有失败的刮削任务</div></div>
     </div>
 
+    <!-- 缺图诊断 -->
+    <div class="collapse-sec">
+      <div class="head">
+        缺图诊断（{{ missingImages.TotalRecordCount || 0 }}）
+        <span style="flex:1"></span>
+        <span v-if="missingImages.TotalRecordCount > missingImages.Items.length" class="muted" style="font-size:12px;margin-right:8px;">
+          当前显示 {{ missingImages.Items.length }} 条
+        </span>
+        <button class="btn ghost sm" @click="loadMissingImages(true)" :disabled="missingLoading">
+          {{ missingLoading ? '诊断中…' : '刷新诊断' }}
+        </button>
+      </div>
+      <div class="body">
+        <div v-if="!missingImages.TMDBConfigured || !missingImages.DownloadImages" class="diagnostic-note">
+          请检查 TMDB API Key，并在 TMDB 设置中开启“下载海报与背景图”；否则刮削可能找到元数据，但无法保存海报。
+          <router-link to="/admin/tmdb">打开 TMDB 设置 ›</router-link>
+        </div>
+        <div v-if="missingError" class="empty-line" style="color:var(--danger);">{{ missingError }}</div>
+        <table v-else-if="missingImages.Items.length" class="tbl">
+          <thead><tr><th>名称</th><th style="width:80px;">类型</th><th>诊断</th><th style="width:190px;">操作</th></tr></thead>
+          <tbody>
+            <tr v-for="f in missingImages.Items" :key="f.ID">
+              <td>
+                <a href="javascript:void(0)" @click="$router.push('/item/' + f.ID)">{{ f.Name }}</a>
+                <span v-if="f.Year" class="muted">（{{ f.Year }}）</span>
+                <div class="muted" style="font-size:11.5px;">{{ f.Path }}</div>
+              </td>
+              <td>{{ f.Type === 'Series' ? '剧集' : '电影' }}</td>
+              <td class="muted" style="font-size:12.5px;">
+                {{ f.Reason }}
+                <div v-if="f.Error" style="color:var(--danger);margin-top:3px;">最近失败：{{ f.Error }}</div>
+              </td>
+              <td><div style="display:flex;gap:6px;flex-wrap:wrap;">
+                <button class="btn ghost sm" :disabled="workingID === f.ID" @click="scrapeOne(f)">重新刮削</button>
+                <button class="btn ghost sm" :disabled="workingID === f.ID" @click="openManual(f)">手动关键词</button>
+              </div></td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-else-if="!missingLoading" class="empty-line">没有发现缺少主海报的电影或剧集</div>
+      </div>
+    </div>
+
     <div class="modal-mask" v-if="manualItem" @click.self="closeManual">
       <div class="manual-modal">
         <div class="modal-title">手动指定 TMDB 搜索关键词</div>
@@ -136,6 +179,9 @@ const cfg = ref({ enabled: true, realtime: false, autoRefresh: true, manual: tru
 const st = ref({ State: 'idle', Pending: 0, Failed: 0 })
 const showLog = ref(true)
 const failed = ref([])
+const missingImages = ref({ Items: [], TotalRecordCount: 0, DownloadImages: true, TMDBConfigured: true })
+const missingLoading = ref(false)
+const missingError = ref('')
 const logs = ref([])
 const logBox = ref(null)
 const sseOnline = ref(false)
@@ -149,11 +195,27 @@ let timer = null
 const stateText = computed(() => ({ idle: '空闲', running: '运行中', paused: '已暂停' }[st.value.State] || st.value.State))
 
 async function loadAll() {
+  loadMissingImages()
   try {
-    cfg.value = await api.admin.scrapeConfig()
-    st.value = await api.admin.scrapeState()
-    failed.value = await api.admin.scrapeFailed()
+    const [config, status, failures] = await Promise.all([
+      api.admin.scrapeConfig(), api.admin.scrapeState(), api.admin.scrapeFailed()
+    ])
+    cfg.value = config
+    st.value = status
+    failed.value = failures
   } catch (e) { toast(errText(e), true) }
+}
+async function loadMissingImages(showError = false) {
+  missingLoading.value = true
+  missingError.value = ''
+  try {
+    missingImages.value = await api.admin.scrapeMissingImages()
+  } catch (e) {
+    missingError.value = errText(e)
+    if (showError) toast(errText(e), true)
+  } finally {
+    missingLoading.value = false
+  }
 }
 async function save() {
   try {
@@ -172,6 +234,7 @@ function cycleOverwrite() {
 async function ctrl(action) {
   try {
     const r = await api.admin.scrapeControl(action)
+    if (action === 'scan' || (action === 'start' && (r.Queued ?? 0) > 0)) st.value.State = 'running'
     toast({ scan: '扫描已触发', start: `已开始（${r.Queued ?? 0} 个待刮削）`, pause: '已暂停', stop: '已停止' }[action] || '已执行')
     setTimeout(loadAll, 500)
   } catch (e) { toast(errText(e), true) }
@@ -179,6 +242,7 @@ async function ctrl(action) {
 async function retryAll() {
   try {
     const r = await api.admin.scrapeRetry()
+    if ((r.Queued ?? 0) > 0) st.value.State = 'running'
     toast(`已重试 ${r.Queued ?? 0} 个条目`)
     setTimeout(loadAll, 600)
   } catch (e) { toast(errText(e), true) }
@@ -210,6 +274,7 @@ async function queueScrape(f, query = '', year = 0) {
   workingID.value = f.ID
   try {
     await api.admin.scrapeItem({ ItemID: f.ID, Query: query, Year: year })
+    st.value.State = 'running'
     toast(query ? `已按「${query}」加入刮削队列` : `「${f.Name}」已加入重新获取队列`)
     setTimeout(loadAll, 600)
     return true
@@ -241,7 +306,11 @@ onMounted(() => {
   loadAll()
   connectLogs()
   timer = setInterval(() => {
-    api.admin.scrapeState().then(s => st.value = s).catch(() => {})
+    api.admin.scrapeState().then(s => {
+      const wasActive = st.value.State === 'running' || st.value.State === 'paused'
+      st.value = s
+      if (wasActive && s.State === 'idle') loadMissingImages()
+    }).catch(() => {})
     api.admin.scrapeFailed().then(items => failed.value = items).catch(() => {})
   }, 4000)
 })
@@ -261,4 +330,6 @@ onBeforeUnmount(() => { clearInterval(timer); if (es) es.close() })
 .manual-modal input { width: 100%; }
 .modal-title { margin-bottom: 8px; color: #e8eaed; font-size: 16px; font-weight: 700; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+.diagnostic-note { margin-bottom: 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; color: var(--text-dim); font-size: 12.5px; }
+.diagnostic-note a { margin-left: 6px; color: var(--accent); }
 </style>

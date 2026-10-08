@@ -212,6 +212,47 @@ func FailedScrapes(limit int) []map[string]any {
         return out
 }
 
+// MissingImageScrapes lists movies and series whose primary poster is missing
+// or no longer exists on disk. It scans metadata rows once per diagnostic
+// request rather than running as part of the scrape status polling loop.
+func MissingImageScrapes(limit int) ([]map[string]any, int, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	var items []models.Item
+	if err := db.DB.Select("id, name, type, path, year, poster, scrape_error, updated_at").
+		Where("type IN ?", []string{"Movie", "Series"}).
+		Order("updated_at DESC").Find(&items).Error; err != nil {
+		return nil, 0, err
+	}
+
+	out := make([]map[string]any, 0, limit)
+	total := 0
+	for i := range items {
+		item := &items[i]
+		if hasImageFile(item.Poster) {
+			continue
+		}
+		total++
+		if len(out) >= limit {
+			continue
+		}
+		reason := "尚未获取主海报"
+		if item.Poster != "" {
+			reason = "主海报文件不存在"
+		}
+		out = append(out, map[string]any{
+			"ID": item.ID, "Name": item.Name, "Type": item.Type,
+			"Path": item.Path, "Year": item.Year, "Error": item.ScrapeError,
+			"Reason": reason,
+		})
+	}
+	return out, total, nil
+}
+
 // ScrapePendingCount includes movies whose metadata is marked scraped but whose
 // poster is missing, when image downloads are enabled.
 func ScrapePendingCount() int64 {

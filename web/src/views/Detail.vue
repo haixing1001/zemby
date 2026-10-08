@@ -47,6 +47,22 @@
       </div>
     </div>
 
+    <!-- 相关影片 -->
+    <div v-if="relatedItems.length" class="section">
+      <h2>相关影片</h2>
+      <div class="grid">
+        <div v-for="related in relatedItems" :key="related.Id" class="poster-card" @click="openRelated(related)">
+          <div class="poster">
+            <img v-if="!relatedImageBroken(related)" :src="imageUrl(related.Id, 'Primary', 300)" loading="lazy" @error="breakRelatedImage(related)" />
+            <div v-else class="placeholder">{{ (related.Name || '?')[0] }}</div>
+            <span v-if="related.CommunityRating" class="badge">★ {{ related.CommunityRating.toFixed(1) }}</span>
+          </div>
+          <div class="title">{{ related.Name }}</div>
+          <div class="meta">{{ related.ProductionYear || '' }}{{ related.Type === 'Series' ? ' · 剧集' : '' }}</div>
+        </div>
+      </div>
+    </div>
+
     <!-- 剧集：季与集 -->
     <div v-if="item.Type === 'Series'" class="section">
       <div class="season-tabs">
@@ -82,6 +98,8 @@ const loading = ref(true)
 const error = ref('')
 const item = ref({})
 const broken = ref(false)
+const relatedItems = ref([])
+const brokenRelatedImages = ref(new Set())
 const seasons = ref([])
 const episodes = ref([])
 const currentSeason = ref('')
@@ -92,6 +110,13 @@ let seasonRequestSeq = 0
 const genres = computed(() => item.value.Genres || [])
 const people = computed(() => item.value.People || [])
 function onCastImgError(ev) { ev.target.style.display = 'none' }
+function relatedImageBroken(related) { return brokenRelatedImages.value.has(related.Id) }
+function breakRelatedImage(related) {
+  const next = new Set(brokenRelatedImages.value)
+  next.add(related.Id)
+  brokenRelatedImages.value = next
+}
+function openRelated(related) { router.push('/item/' + related.Id) }
 const runtimeText = computed(() => fmtRuntime(item.value.RunTimeTicks))
 const resumePct = computed(() => {
   const rt = item.value.RunTimeTicks || 0
@@ -158,6 +183,8 @@ async function loadItem(itemId) {
   error.value = ''
   item.value = {}
   broken.value = false
+  relatedItems.value = []
+  brokenRelatedImages.value = new Set()
   seasons.value = []
   episodes.value = []
   currentSeason.value = ''
@@ -166,6 +193,11 @@ async function loadItem(itemId) {
     const loadedItem = await api.item(itemId)
     if (request !== requestSeq) return
     item.value = loadedItem || {}
+    if (item.value.Type === 'Movie' || item.value.Type === 'Series') {
+      api.similarItems(itemId, 8).then(result => {
+        if (request === requestSeq) relatedItems.value = result.Items || []
+      }).catch(() => {})
+    }
     if (item.value.Type === 'Series') {
       const s = await api.seasons(itemId)
       if (request !== requestSeq) return

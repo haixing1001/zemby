@@ -91,6 +91,8 @@ func (a *App) adminRoute(w http.ResponseWriter, r *http.Request, p string, parts
                         a.adminScrapeControl(w, r)
                 case p == "/admin/scrape/failed":
                         a.adminScrapeFailed(w, r)
+                case p == "/admin/scrape/missing-images":
+                        a.adminScrapeMissingImages(w, r)
                 case p == "/admin/scrape/retry":
                         a.adminScrapeRetry(w, r)
                 case p == "/admin/probe/config":

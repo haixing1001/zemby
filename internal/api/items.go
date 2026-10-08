@@ -598,19 +598,84 @@ func (a *App) itemDetail(w http.ResponseWriter, r *http.Request, id string) {
         a.json(w, 200, a.itemDTO(&it, true, uid))
 }
 
-// itemSimilar 相似条目（同类型同年/同库随机）。
+// itemSimilar returns same-library items ranked by genre, year, and rating.
 func (a *App) itemSimilar(w http.ResponseWriter, r *http.Request, id string) {
         var it models.Item
         if err := a.db.First(&it, "id = ?", strings.ToLower(id)).Error; err != nil {
                 a.fail(w, 404, "条目不存在")
                 return
         }
-        var items []models.Item
-        dbq := a.db.Where("type = ? AND id <> ?", it.Type, it.ID).Order("RANDOM()").Limit(12)
+	limit := qInt(r, "Limit", 8)
+	if limit <= 0 {
+		limit = 8
+	}
+	if limit > 24 {
+		limit = 24
+	}
+	var items []models.Item
+	dbq := a.db.Select("id, library_id, type, name, sort_name, year, genres, community_rating, poster, image_rev, date_created").
+		Where("type = ? AND id <> ?", it.Type, it.ID).
+		Order("community_rating DESC").Limit(500)
         if it.LibraryID != "" {
                 dbq = dbq.Where("library_id = ?", it.LibraryID)
         }
         dbq.Find(&items)
+
+	baseGenres := make(map[string]struct{})
+	for _, genre := range strSlice(it.Genres) {
+		baseGenres[genre] = struct{}{}
+	}
+	type rankedItem struct {
+		item  models.Item
+		score float64
+		yearGap int
+	}
+	ranked := make([]rankedItem, 0, len(items))
+	for i := range items {
+		candidate := items[i]
+		sharedGenres := 0
+		for _, genre := range strSlice(candidate.Genres) {
+			if _, ok := baseGenres[genre]; ok {
+				sharedGenres++
+			}
+		}
+		yearGap := 9999
+		yearScore := 0.0
+		if it.Year > 0 && candidate.Year > 0 {
+			yearGap = it.Year - candidate.Year
+			if yearGap < 0 {
+				yearGap = -yearGap
+			}
+			yearScore = 10 - float64(yearGap)
+			if yearScore < 0 {
+				yearScore = 0
+			}
+		}
+		ranked = append(ranked, rankedItem{
+			item: candidate,
+			score: float64(sharedGenres*100) + yearScore + candidate.CommunityRating*0.1,
+			yearGap: yearGap,
+		})
+	}
+	sort.SliceStable(ranked, func(i, j int) bool {
+		if ranked[i].score != ranked[j].score {
+			return ranked[i].score > ranked[j].score
+		}
+		if ranked[i].yearGap != ranked[j].yearGap {
+			return ranked[i].yearGap < ranked[j].yearGap
+		}
+		if ranked[i].item.CommunityRating != ranked[j].item.CommunityRating {
+			return ranked[i].item.CommunityRating > ranked[j].item.CommunityRating
+		}
+		return ranked[i].item.Name < ranked[j].item.Name
+	})
+	if len(ranked) > limit {
+		ranked = ranked[:limit]
+	}
+	items = make([]models.Item, len(ranked))
+	for i := range ranked {
+		items[i] = ranked[i].item
+	}
         out := a.itemDTOs(items, false, "")
         a.json(w, 200, M{"Items": out, "TotalRecordCount": len(out), "StartIndex": 0})
 }
