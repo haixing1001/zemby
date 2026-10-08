@@ -2,7 +2,7 @@ name: Build Docker Image (amd64 / arm64)
 
 on:
   push:
-    branches: [main, codex]
+    branches: [main, codez, codex]
     tags: ["v*"]
   workflow_dispatch:
 
