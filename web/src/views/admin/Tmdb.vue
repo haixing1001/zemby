@@ -10,9 +10,9 @@
         <label>TMDB API 镜像地址</label>
         <input v-model="tmdb.APIBaseURL" placeholder="https://api.themoviedb.org/3" style="width:100%;max-width:520px;" />
         <label>TMDB 图片镜像地址</label>
-        <input v-model="tmdb.ImageBaseURL" placeholder="https://image.tmdb.org/t/p" style="width:100%;max-width:520px;" />
+        <input v-model="tmdb.ImageBaseURL" placeholder="https://image.tmdb.org/t/p 或 https://wsrv.nl/?url=https://image.tmdb.org" style="width:100%;max-width:520px;" />
         <p class="muted" style="font-size:12.5px;margin-top:6px;">
-          可分别填写兼容 TMDB API 与图片路径的镜像基础地址；留空使用官方地址。API 地址后会追加 /search、/movie 等路径，图片地址后会追加尺寸与图片路径。
+          可分别填写兼容 TMDB API 与图片路径的镜像基础地址；图片代理也支持带 url 参数的地址（如 wsrv.nl）。留空使用官方地址。API 地址后会追加 /search、/movie 等路径，图片地址后会追加尺寸与图片路径。
         </p>
         <label>元数据语言</label>
         <select v-model="tmdb.Language" style="width:200px;">

@@ -44,10 +44,10 @@ func LoadSettings() Settings {
         if s.Language == "" {
                 s.Language = "zh-CN"
         }
-	if s.APIBaseURL, _ = normalizeBaseURL(s.APIBaseURL, defaultAPIBase); s.APIBaseURL == "" {
+	if s.APIBaseURL, _ = normalizeBaseURL(s.APIBaseURL, defaultAPIBase, false); s.APIBaseURL == "" {
 		s.APIBaseURL = defaultAPIBase
 	}
-	if s.ImageBaseURL, _ = normalizeBaseURL(s.ImageBaseURL, defaultImgBase); s.ImageBaseURL == "" {
+	if s.ImageBaseURL, _ = normalizeBaseURL(s.ImageBaseURL, defaultImgBase, true); s.ImageBaseURL == "" {
 		s.ImageBaseURL = defaultImgBase
 	}
         return s
@@ -56,10 +56,10 @@ func LoadSettings() Settings {
 // SaveSettings 保存设置。
 func SaveSettings(s Settings) error {
 	var err error
-	if s.APIBaseURL, err = normalizeBaseURL(s.APIBaseURL, defaultAPIBase); err != nil {
+	if s.APIBaseURL, err = normalizeBaseURL(s.APIBaseURL, defaultAPIBase, false); err != nil {
 		return fmt.Errorf("TMDB API 镜像地址无效：%w", err)
 	}
-	if s.ImageBaseURL, err = normalizeBaseURL(s.ImageBaseURL, defaultImgBase); err != nil {
+	if s.ImageBaseURL, err = normalizeBaseURL(s.ImageBaseURL, defaultImgBase, true); err != nil {
 		return fmt.Errorf("TMDB 图片镜像地址无效：%w", err)
 	}
 	b, err := json.Marshal(s)
@@ -69,7 +69,7 @@ func SaveSettings(s Settings) error {
         return db.SetSetting("tmdb", string(b))
 }
 
-func normalizeBaseURL(raw, fallback string) (string, error) {
+func normalizeBaseURL(raw, fallback string, allowImageProxy bool) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return fallback, nil
@@ -78,10 +78,56 @@ func normalizeBaseURL(raw, fallback string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-		return "", fmt.Errorf("请输入不带查询参数的 http 或 https 基础地址")
+	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.Fragment != "" {
+		return "", fmt.Errorf("请输入有效的 http 或 https 基础地址")
 	}
-	return strings.TrimRight(u.String(), "/"), nil
+	if u.RawQuery != "" {
+		if !allowImageProxy {
+			return "", fmt.Errorf("API 镜像地址不能包含查询参数")
+		}
+		query, err := url.ParseQuery(u.RawQuery)
+		if err != nil {
+			return "", fmt.Errorf("镜像查询参数格式无效：%w", err)
+		}
+		values := query["url"]
+		if len(values) != 1 || strings.TrimSpace(values[0]) == "" {
+			return "", fmt.Errorf("图片代理地址必须包含一个非空 url 参数")
+		}
+		origin, err := url.Parse(values[0])
+		if err != nil || (origin.Scheme != "http" && origin.Scheme != "https") || origin.Host == "" || origin.User != nil || origin.Fragment != "" {
+			return "", fmt.Errorf("图片代理 url 参数必须是有效的 http 或 https 图片源地址")
+		}
+	}
+	u.Path = strings.TrimRight(u.Path, "/")
+	u.RawPath = ""
+	return u.String(), nil
+}
+
+func imageRequestURL(base, size, imagePath string) (string, error) {
+	proxy, err := url.Parse(base)
+	if err != nil {
+		return "", err
+	}
+	if proxy.RawQuery == "" {
+		return strings.TrimRight(base, "/") + "/" + size + imagePath, nil
+	}
+	query, err := url.ParseQuery(proxy.RawQuery)
+	if err != nil {
+		return "", err
+	}
+	origin, err := url.Parse(query.Get("url"))
+	if err != nil || origin.Host == "" {
+		return "", fmt.Errorf("图片代理缺少有效的 url 参数")
+	}
+	originPath := strings.TrimRight(origin.Path, "/")
+	if originPath != "/t/p" && !strings.HasSuffix(originPath, "/t/p") {
+		originPath += "/t/p"
+	}
+	origin.Path = originPath + "/" + size + "/" + strings.TrimLeft(imagePath, "/")
+	origin.RawPath = ""
+	query.Set("url", origin.String())
+	proxy.RawQuery = query.Encode()
+	return proxy.String(), nil
 }
 
 // APIError TMDB 错误。
@@ -311,7 +357,10 @@ func DownloadImage(ctx context.Context, metaDir, itemID string, size, path strin
                 return local, nil
         }
         _ = os.Remove(local)
-	u := LoadSettings().ImageBaseURL + "/" + size + path
+	u, err := imageRequestURL(LoadSettings().ImageBaseURL, size, path)
+	if err != nil {
+		return "", err
+	}
         var lastErr error
         for attempt := 0; attempt < 3; attempt++ {
                 req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
