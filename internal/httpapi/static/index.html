@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0b1017" />
+    <title>Cinebase · 私人媒体库</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <main id="login-view" class="login-shell">
+      <section class="login-card">
+        <div class="brand-mark">C</div>
+        <p class="eyebrow">YOUR HOME MEDIA LIBRARY</p>
+        <h1>欢迎回家</h1>
+        <p class="muted">输入管理员密码，继续整理和播放你的媒体。</p>
+        <form id="login-form" class="stack-form">
+          <label for="password">管理员密码</label>
+          <input id="password" name="password" type="password" autocomplete="current-password" required minlength="12" />
+          <button class="button button-primary" type="submit">进入媒体库</button>
+          <p id="login-error" class="form-error" role="alert"></p>
+        </form>
+      </section>
+    </main>
+
+    <div id="app-view" class="app-shell" hidden>
+      <aside class="sidebar">
+        <a class="brand" href="#home" aria-label="Cinebase 首页">
+          <span class="brand-mark">C</span>
+          <span><strong>Cinebase</strong><small>HOME MEDIA</small></span>
+        </a>
+        <div class="nav-caption">工作区</div>
+        <nav class="main-nav" aria-label="主导航">
+          <button class="nav-item is-active" data-view="home"><span class="nav-icon">⌂</span>总览</button>
+          <button class="nav-item" data-view="library"><span class="nav-icon">▤</span>媒体库</button>
+        </nav>
+        <div class="sidebar-bottom">
+          <div class="server-chip"><span class="status-dot"></span><span><strong>服务运行中</strong><small>直连播放 · 本地扫描</small></span></div>
+          <button id="logout-button" class="nav-item logout-button"><span class="nav-icon">↪</span>退出登录</button>
+        </div>
+      </aside>
+
+      <section class="main-column">
+        <header class="topbar">
+          <div><span class="breadcrumb">CINEBASE</span><span class="breadcrumb-separator">/</span><span id="page-title">总览</span></div>
+          <div class="topbar-actions"><span class="live-indicator"><i></i>服务器在线</span><button id="refresh-button" class="icon-button" type="button" title="刷新数据" aria-label="刷新数据">↻</button></div>
+        </header>
+
+        <main class="content">
+          <section id="home-view" class="page-view">
+            <div class="page-heading">
+              <div><p class="eyebrow">YOUR COLLECTION, AT A GLANCE</p><h1>媒体总览</h1><p class="muted">扫描一次，随时找到想看的内容。</p></div>
+              <button class="button button-primary" data-action="show-add">＋ 添加媒体库</button>
+            </div>
+            <div class="stat-grid">
+              <article class="stat-card"><span class="stat-label">媒体库</span><strong id="stat-libraries">0</strong><small>个已连接目录</small></article>
+              <article class="stat-card"><span class="stat-label">媒体文件</span><strong id="stat-items">0</strong><small>个已索引媒体文件</small></article>
+              <article class="stat-card"><span class="stat-label">扫描任务</span><strong id="stat-jobs">0</strong><small>正在处理</small></article>
+            </div>
+            <section class="section-block">
+              <div class="section-heading"><div><p class="eyebrow">COLLECTIONS</p><h2>你的媒体库</h2></div><button class="text-button" data-view="library">查看全部 <span>→</span></button></div>
+              <div id="home-libraries" class="library-grid"></div>
+              <div id="empty-libraries" class="empty-state" hidden><div class="empty-art">▤</div><h3>从一个文件夹开始</h3><p>添加媒体目录后，Cinebase 会在后台建立索引。</p><button class="button button-secondary" data-action="show-add">添加第一个媒体库</button></div>
+            </section>
+            <section class="section-block jobs-block">
+              <div class="section-heading"><div><p class="eyebrow">BACKGROUND ACTIVITY</p><h2>最近扫描</h2></div><span id="jobs-caption" class="muted small-text">后台任务状态</span></div>
+              <div id="recent-jobs" class="job-list"></div>
+            </section>
+          </section>
+
+          <section id="library-view" class="page-view" hidden>
+            <div class="page-heading compact-heading"><div><p class="eyebrow">BROWSE YOUR COLLECTION</p><h1>媒体库</h1><p class="muted">选择一个媒体库，浏览已发现的文件。</p></div><button class="button button-primary" data-action="show-add">＋ 添加媒体库</button></div>
+            <div class="browse-layout">
+              <aside class="library-rail"><div class="rail-heading">媒体目录</div><div id="library-rail-items"></div></aside>
+              <section class="media-panel">
+                <div id="media-heading" class="media-heading"><div><h2>选择媒体库</h2><p class="muted">扫描完成后，文件会显示在这里。</p></div></div>
+                <div id="media-items" class="media-grid"></div>
+                <div id="empty-media" class="empty-state compact-empty" hidden><div class="empty-art">◌</div><h3>还没有发现媒体文件</h3><p>确认路径可读，并重新扫描这个目录。</p></div>
+                <div class="load-more-wrap"><button id="load-more" class="button button-secondary" hidden>加载更多</button></div>
+              </section>
+            </div>
+          </section>
+        </main>
+      </section>
+    </div>
+
+    <dialog id="add-dialog" class="dialog-card">
+      <form id="add-form" class="dialog-form">
+        <div class="dialog-heading"><div><p class="eyebrow">CONNECT A FOLDER</p><h2>添加媒体库</h2></div><button class="icon-button" value="cancel" formmethod="dialog" aria-label="关闭">×</button></div>
+        <label for="library-name">显示名称</label><input id="library-name" name="name" placeholder="例如：电影收藏" maxlength="80" required />
+        <label for="library-path">容器内路径</label><input id="library-path" name="path" placeholder="例如：/media/movies" required /><p class="field-hint">填写 Docker 内可见的路径；宿主机目录通过 MEDIA_PATH 挂载到 /media。</p>
+        <label for="library-kind">媒体类型</label><select id="library-kind" name="kind"><option value="movies">电影</option><option value="series">剧集</option><option value="music">音乐</option></select>
+        <p id="add-error" class="form-error" role="alert"></p>
+        <div class="dialog-actions"><button class="button button-secondary" value="cancel" formmethod="dialog">取消</button><button id="add-submit" class="button button-primary" type="submit">添加并开始扫描</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="player-dialog" class="player-dialog">
+      <div class="player-top"><div><span class="eyebrow">DIRECT PLAY</span><h2 id="player-title">正在播放</h2></div><button id="close-player" class="icon-button" aria-label="关闭播放器">×</button></div>
+      <video id="video-player" controls playsinline preload="metadata"></video>
+      <audio id="audio-player" controls preload="metadata" hidden></audio>
+      <p class="player-note">视频通过 HTTP Range 从媒体目录直读，当前版本不进行转码。</p>
+    </dialog>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  </body>
+</html>

@@ -1,0 +1,27 @@
+services:
+  cinebase:
+    build: .
+    image: ghcr.io/${GITHUB_REPOSITORY:-local/cinebase}:${IMAGE_TAG:-latest}
+    container_name: cinebase
+    init: true
+    user: "${PUID:-1000}:${PGID:-1000}"
+    restart: unless-stopped
+    environment:
+      CINEBASE_ADDR: :8097
+      CINEBASE_DATA_DIR: /data
+      CINEBASE_MEDIA_ROOTS: /media
+      CINEBASE_MAX_STREAMS: ${CINEBASE_MAX_STREAMS:-32}
+      CINEBASE_ADMIN_PASSWORD: ${CINEBASE_ADMIN_PASSWORD:?Set CINEBASE_ADMIN_PASSWORD in .env}
+      TZ: ${TZ:-Asia/Shanghai}
+    ports:
+      - "${CINEBASE_PORT:-8097}:8097"
+    volumes:
+      - ./data:/data
+      - ${MEDIA_PATH:-./media}:/media:ro
+    stop_grace_period: 35s
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/cinebase", "healthcheck"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
