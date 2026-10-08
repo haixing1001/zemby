@@ -845,11 +845,14 @@ type aiScoredResult struct {
 	score  float64
 }
 
-// filterAIKeywordResults 只保留标题与 AI 关键词确实相关的结果。TMDB 搜索可能返回
-// 同一年份但完全无关的条目，不能只按年份、海报或评分选择。
+// filterAIKeywordResults 只保留年份和标题都与 AI 关键词相关的结果。TMDB 搜索可能
+// 返回标题局部重合或年份不同的无关条目，不能只按海报或评分选择。
 func filterAIKeywordResults(results []tmdb.SearchResult, keywords *AIKeywords) []tmdb.SearchResult {
 	matched := make([]aiScoredResult, 0, len(results))
 	for _, result := range results {
+		if !aiResultYearMatches(result, keywords.Year) {
+			continue
+		}
 		titleScore := aiResultTitleScore(result, keywords)
 		if titleScore < 60 {
 			continue
@@ -869,6 +872,13 @@ func filterAIKeywordResults(results []tmdb.SearchResult, keywords *AIKeywords) [
 		out = append(out, matched[i].result)
 	}
 	return out
+}
+
+func aiResultYearMatches(result tmdb.SearchResult, year int) bool {
+	if year <= 0 {
+		return true
+	}
+	return parseYear(result.ReleaseDate) == year || parseYear(result.FirstAirDate) == year
 }
 
 func aiResultTitleScore(result tmdb.SearchResult, keywords *AIKeywords) float64 {
@@ -904,13 +914,6 @@ func searchTitleSimilarity(want, got string) float64 {
 	}
 	if wantNorm == gotNorm {
 		return 100
-	}
-	short, long := wantNorm, gotNorm
-	if len(short) > len(long) {
-		short, long = long, short
-	}
-	if len(short) >= 2 && strings.Contains(long, short) {
-		return 80
 	}
 	wantTokens := searchTitleTokens(want)
 	gotTokens := searchTitleTokens(got)

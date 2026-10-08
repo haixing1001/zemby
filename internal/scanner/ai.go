@@ -183,7 +183,7 @@ func aiSearchQueries(k *AIKeywords) []string {
 	}
 	title := strings.TrimSpace(k.Title)
 	original := strings.TrimSpace(k.OriginalTitle)
-	queries := make([]string, 0, 5)
+	queries := make([]string, 0, 3)
 	addQuery := func(q string) {
 		if q == "" {
 			return
@@ -196,15 +196,14 @@ func aiSearchQueries(k *AIKeywords) []string {
 		queries = append(queries, q)
 	}
 
-	if title != "" && original != "" && !strings.EqualFold(title, original) {
-		combined := fmt.Sprintf("%s (%s)", title, original)
-		addQuery(combined)
-	}
-	for _, name := range []string{title, original} {
+	for _, name := range []string{original, title} {
 		if name == "" {
 			continue
 		}
 		addQuery(name)
+	}
+	if title != "" && original != "" && !strings.EqualFold(title, original) {
+		addQuery(fmt.Sprintf("%s (%s)", title, original))
 	}
 	return queries
 }
