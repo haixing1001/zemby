@@ -123,7 +123,7 @@
 
         <p class="muted" style="font-size:12.5px;margin-top:12px;">
           兼容 OpenAI Chat Completions 风格接口；API 根地址也可填写完整的 /chat/completions 地址。
-          请求只发送文件名和最近两级目录，不包含媒体库的宿主机绝对路径。识别日志可在「日志管理 → AI识别」查看。
+          请求会发送媒体文件路径；路径中的内容只作为标题线索，不会被当作指令执行。识别日志可在「日志管理 → AI识别」查看。
         </p>
       </div>
     </div>
