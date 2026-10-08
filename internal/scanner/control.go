@@ -212,10 +212,9 @@ func FailedScrapes(limit int) []map[string]any {
         return out
 }
 
-// MissingImageScrapes lists movies and series whose primary poster is missing
-// or no longer exists on disk. It scans metadata rows once per diagnostic
-// request rather than running as part of the scrape status polling loop.
-func MissingImageScrapes(limit int) ([]map[string]any, int, error) {
+// IncompleteItems lists movies and series missing artwork, a cast list, or overview.
+// It checks image files once per diagnostic request, not during status polling.
+func IncompleteItems(limit int) ([]map[string]any, int, error) {
 	if limit <= 0 {
 		limit = 200
 	}
@@ -223,7 +222,7 @@ func MissingImageScrapes(limit int) ([]map[string]any, int, error) {
 		limit = 500
 	}
 	var items []models.Item
-	if err := db.DB.Select("id, name, type, path, year, poster, scrape_error, updated_at").
+	if err := db.DB.Select("id, name, type, path, year, poster, backdrop, people, overview, scrape_error, updated_at").
 		Where("type IN ?", []string{"Movie", "Series"}).
 		Order("updated_at DESC").Find(&items).Error; err != nil {
 		return nil, 0, err
@@ -233,24 +232,70 @@ func MissingImageScrapes(limit int) ([]map[string]any, int, error) {
 	total := 0
 	for i := range items {
 		item := &items[i]
-		if hasImageFile(item.Poster) {
+		missing := make([]string, 0, 4)
+		if !hasImageFile(item.Poster) {
+			if item.Poster == "" {
+				missing = append(missing, "海报")
+			} else {
+				missing = append(missing, "海报文件")
+			}
+		}
+		if !hasImageFile(item.Backdrop) {
+			if item.Backdrop == "" {
+				missing = append(missing, "背景图")
+			} else {
+				missing = append(missing, "背景图文件")
+			}
+		}
+		if !hasActorMetadata(item.People) {
+			missing = append(missing, "演员表")
+		}
+		if strings.TrimSpace(item.Overview) == "" {
+			missing = append(missing, "简介")
+		}
+		if len(missing) == 0 {
 			continue
 		}
 		total++
 		if len(out) >= limit {
 			continue
 		}
-		reason := "尚未获取主海报"
-		if item.Poster != "" {
-			reason = "主海报文件不存在"
-		}
 		out = append(out, map[string]any{
 			"ID": item.ID, "Name": item.Name, "Type": item.Type,
 			"Path": item.Path, "Year": item.Year, "Error": item.ScrapeError,
-			"Reason": reason,
+			"MissingFields": missing,
 		})
 	}
 	return out, total, nil
+}
+
+func hasActorMetadata(raw string) bool {
+	if strings.TrimSpace(raw) == "" {
+		return false
+	}
+	var people []map[string]string
+	if err := json.Unmarshal([]byte(raw), &people); err != nil || len(people) == 0 {
+		var legacy []string
+		if json.Unmarshal([]byte(raw), &legacy) != nil {
+			return false
+		}
+		for _, entry := range legacy {
+			var person map[string]string
+			if json.Unmarshal([]byte(entry), &person) == nil {
+				people = append(people, person)
+			}
+		}
+	}
+	for _, person := range people {
+		name := strings.TrimSpace(person["Name"])
+		kind := strings.ToLower(strings.TrimSpace(person["Type"]))
+		role := strings.ToLower(strings.TrimSpace(person["Role"]))
+		if name == "" || kind == "director" || kind == "导演" || role == "director" || role == "导演" {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // ScrapePendingCount includes movies whose metadata is marked scraped but whose

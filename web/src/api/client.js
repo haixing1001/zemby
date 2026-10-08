@@ -147,7 +147,7 @@ export const api = {
     scrapeState: () => api.get('/admin/scrape/state'),
     scrapeControl: (action) => api.post('/admin/scrape/control', { Action: action }),
     scrapeFailed: () => api.get('/admin/scrape/failed'),
-    scrapeMissingImages: () => api.get('/admin/scrape/missing-images?limit=200'),
+    scrapeIncomplete: () => api.get('/admin/scrape/incomplete?limit=200'),
     scrapeRetry: () => api.post('/admin/scrape/retry', {}),
     scrapeItem: (body) => api.post('/admin/scrape', body),
     probeConfig: () => api.get('/admin/probe/config'),

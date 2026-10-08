@@ -90,28 +90,28 @@
       <div class="body" v-else><div class="empty-line">没有失败的刮削任务</div></div>
     </div>
 
-    <!-- 缺图诊断 -->
+    <!-- 信息完整性诊断 -->
     <div class="collapse-sec">
       <div class="head">
-        缺图诊断（{{ missingImages.TotalRecordCount || 0 }}）
+        信息不全诊断（{{ incompleteItems.TotalRecordCount || 0 }}）
         <span style="flex:1"></span>
-        <span v-if="missingImages.TotalRecordCount > missingImages.Items.length" class="muted" style="font-size:12px;margin-right:8px;">
-          当前显示 {{ missingImages.Items.length }} 条
+        <span v-if="incompleteItems.TotalRecordCount > incompleteItems.Items.length" class="muted" style="font-size:12px;margin-right:8px;">
+          当前显示 {{ incompleteItems.Items.length }} 条
         </span>
-        <button class="btn ghost sm" @click="loadMissingImages(true)" :disabled="missingLoading">
-          {{ missingLoading ? '诊断中…' : '刷新诊断' }}
+        <button class="btn ghost sm" @click="loadIncompleteItems(true)" :disabled="diagnosticLoading">
+          {{ diagnosticLoading ? '诊断中…' : '刷新诊断' }}
         </button>
       </div>
       <div class="body">
-        <div v-if="!missingImages.TMDBConfigured || !missingImages.DownloadImages" class="diagnostic-note">
-          请检查 TMDB API Key，并在 TMDB 设置中开启“下载海报与背景图”；否则刮削可能找到元数据，但无法保存海报。
+        <div v-if="!incompleteItems.TMDBConfigured || !incompleteItems.DownloadImages" class="diagnostic-note">
+          TMDB 未配置 API Key 或关闭图片下载时，自动重刮削无法补齐海报和背景图。
           <router-link to="/admin/tmdb">打开 TMDB 设置 ›</router-link>
         </div>
-        <div v-if="missingError" class="empty-line" style="color:var(--danger);">{{ missingError }}</div>
-        <table v-else-if="missingImages.Items.length" class="tbl">
-          <thead><tr><th>名称</th><th style="width:80px;">类型</th><th>诊断</th><th style="width:190px;">操作</th></tr></thead>
+        <div v-if="diagnosticError" class="empty-line" style="color:var(--danger);">{{ diagnosticError }}</div>
+        <table v-else-if="incompleteItems.Items.length" class="tbl">
+          <thead><tr><th>名称</th><th style="width:80px;">类型</th><th>缺失信息</th><th style="width:190px;">操作</th></tr></thead>
           <tbody>
-            <tr v-for="f in missingImages.Items" :key="f.ID">
+            <tr v-for="f in incompleteItems.Items" :key="f.ID">
               <td>
                 <a href="javascript:void(0)" @click="$router.push('/item/' + f.ID)">{{ f.Name }}</a>
                 <span v-if="f.Year" class="muted">（{{ f.Year }}）</span>
@@ -119,7 +119,7 @@
               </td>
               <td>{{ f.Type === 'Series' ? '剧集' : '电影' }}</td>
               <td class="muted" style="font-size:12.5px;">
-                {{ f.Reason }}
+                <span v-for="field in f.MissingFields" :key="field" class="chip issue-chip">缺少{{ field }}</span>
                 <div v-if="f.Error" style="color:var(--danger);margin-top:3px;">最近失败：{{ f.Error }}</div>
               </td>
               <td><div style="display:flex;gap:6px;flex-wrap:wrap;">
@@ -129,7 +129,7 @@
             </tr>
           </tbody>
         </table>
-        <div v-else-if="!missingLoading" class="empty-line">没有发现缺少主海报的电影或剧集</div>
+        <div v-else-if="!diagnosticLoading" class="empty-line">没有发现图片、演员表或简介缺失的影片</div>
       </div>
     </div>
 
@@ -179,9 +179,9 @@ const cfg = ref({ enabled: true, realtime: false, autoRefresh: true, manual: tru
 const st = ref({ State: 'idle', Pending: 0, Failed: 0 })
 const showLog = ref(true)
 const failed = ref([])
-const missingImages = ref({ Items: [], TotalRecordCount: 0, DownloadImages: true, TMDBConfigured: true })
-const missingLoading = ref(false)
-const missingError = ref('')
+const incompleteItems = ref({ Items: [], TotalRecordCount: 0, DownloadImages: true, TMDBConfigured: true })
+const diagnosticLoading = ref(false)
+const diagnosticError = ref('')
 const logs = ref([])
 const logBox = ref(null)
 const sseOnline = ref(false)
@@ -195,7 +195,7 @@ let timer = null
 const stateText = computed(() => ({ idle: '空闲', running: '运行中', paused: '已暂停' }[st.value.State] || st.value.State))
 
 async function loadAll() {
-  loadMissingImages()
+  loadIncompleteItems()
   try {
     const [config, status, failures] = await Promise.all([
       api.admin.scrapeConfig(), api.admin.scrapeState(), api.admin.scrapeFailed()
@@ -205,16 +205,16 @@ async function loadAll() {
     failed.value = failures
   } catch (e) { toast(errText(e), true) }
 }
-async function loadMissingImages(showError = false) {
-  missingLoading.value = true
-  missingError.value = ''
+async function loadIncompleteItems(showError = false) {
+  diagnosticLoading.value = true
+  diagnosticError.value = ''
   try {
-    missingImages.value = await api.admin.scrapeMissingImages()
+    incompleteItems.value = await api.admin.scrapeIncomplete()
   } catch (e) {
-    missingError.value = errText(e)
+    diagnosticError.value = errText(e)
     if (showError) toast(errText(e), true)
   } finally {
-    missingLoading.value = false
+    diagnosticLoading.value = false
   }
 }
 async function save() {
@@ -309,7 +309,7 @@ onMounted(() => {
     api.admin.scrapeState().then(s => {
       const wasActive = st.value.State === 'running' || st.value.State === 'paused'
       st.value = s
-      if (wasActive && s.State === 'idle') loadMissingImages()
+      if (wasActive && s.State === 'idle') loadIncompleteItems()
     }).catch(() => {})
     api.admin.scrapeFailed().then(items => failed.value = items).catch(() => {})
   }, 4000)
@@ -332,4 +332,5 @@ onBeforeUnmount(() => { clearInterval(timer); if (es) es.close() })
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
 .diagnostic-note { margin-bottom: 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; color: var(--text-dim); font-size: 12.5px; }
 .diagnostic-note a { margin-left: 6px; color: var(--accent); }
+.issue-chip { margin: 0 5px 4px 0; }
 </style>

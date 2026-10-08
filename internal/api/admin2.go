@@ -470,11 +470,11 @@ func (a *App) adminScrapeFailed(w http.ResponseWriter, r *http.Request) {
         a.json(w, 200, scanner.FailedScrapes(qInt(r, "limit", 50)))
 }
 
-// adminScrapeMissingImages diagnoses movie and series entries without a usable primary poster.
-func (a *App) adminScrapeMissingImages(w http.ResponseWriter, r *http.Request) {
-	items, total, err := scanner.MissingImageScrapes(qInt(r, "limit", 200))
+// adminScrapeIncomplete diagnoses movie and series entries with missing metadata.
+func (a *App) adminScrapeIncomplete(w http.ResponseWriter, r *http.Request) {
+	items, total, err := scanner.IncompleteItems(qInt(r, "limit", 200))
 	if err != nil {
-		a.fail(w, 500, "缺图诊断查询失败")
+		a.fail(w, 500, "影片信息诊断查询失败")
 		return
 	}
 	settings := tmdb.LoadSettings()
@@ -662,7 +662,7 @@ func (a *App) adminAPIList(w http.ResponseWriter, r *http.Request) {
                 {"搜索", "GET", "/emby/Search/Hints?SearchTerm=", "搜索提示"},
                 {"管理", "GET", "/admin/dashboard", "控制台数据（本页）"},
                 {"管理", "GET", "/admin/scrape/failed", "刮削失败清单"},
-                {"管理", "GET", "/admin/scrape/missing-images", "缺少海报的电影和剧集诊断清单"},
+                {"管理", "GET", "/admin/scrape/incomplete", "缺少图片、演员表或简介的影片诊断清单"},
                 {"管理", "POST", "/admin/scrape", "重新刮削条目；可传 Query/Year 手动搜索 TMDB"},
                 {"管理", "POST", "/admin/ai/test", "AI 识别辅助测试（从文件路径提取关键词）"},
                 {"管理", "GET", "/admin/probe/status", "媒体信息提取状态"},
