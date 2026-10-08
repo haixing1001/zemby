@@ -401,10 +401,23 @@ func (s *Scanner) scrapeMovie(ctx context.Context, item *models.Item, set tmdb.S
                                 if keywords.Year > 0 {
                                         matchYear = keywords.Year
                                 }
-                                results, err = searchWithAIKeywords(ctx, set.APIKey, set.Language, keywords, tmdb.SearchMovie)
+				searchFn := tmdb.SearchMovie
+				if !aiTypeIsMovie(keywords) {
+					searchFn = tmdb.SearchTV
+					logx.TaskLog("scrape", "info", "AI 判定类型「%s」非电影，改用 TMDB TV 搜索", keywords.Type)
+				}
+				results, err = searchWithAIKeywords(ctx, set.APIKey, set.Language, keywords, searchFn)
                                 if err != nil {
                                         return err
                                 }
+				if !aiTypeIsMovie(keywords) {
+					if len(results) == 0 {
+						return fmt.Errorf("AI 判定为非电影，但 TMDB TV 未找到匹配: %s (%d)", keywords.Title, keywords.Year)
+					}
+					best := bestTVResult(results, matchYear)
+					logx.TaskLog("scrape", "info", "AI 命中 TV《%s》(首播 %s) TmdbID=%d", best.Name, best.FirstAirDate, best.ID)
+					return s.scrapeSeries(ctx, item, set, map[string]string{"Tmdb": fmt.Sprint(best.ID)})
+				}
                         }
                 }
                 logx.TaskLog("scrape", "info", "搜索结果：%d 条", len(results))
@@ -468,20 +481,10 @@ func searchWithAIKeywords(ctx context.Context, key, lang string, keywords *AIKey
 	if keywords == nil {
 		return nil, nil
 	}
-	titles := []string{strings.TrimSpace(keywords.Title), strings.TrimSpace(keywords.OriginalTitle)}
-	seenTitles := make(map[string]struct{}, len(titles))
 	seenResults := make(map[int]struct{})
 	var results []tmdb.SearchResult
-	for _, title := range titles {
-		if title == "" {
-			continue
-		}
-		keyTitle := strings.ToLower(title)
-		if _, ok := seenTitles[keyTitle]; ok {
-			continue
-		}
-		seenTitles[keyTitle] = struct{}{}
-		found, err := search(ctx, key, title, lang, keywords.Year)
+	for _, query := range aiSearchQueries(keywords) {
+		found, err := search(ctx, key, query, lang, keywords.Year)
 		if err != nil {
 			if len(results) > 0 {
 				return results, nil
@@ -489,7 +492,7 @@ func searchWithAIKeywords(ctx context.Context, key, lang string, keywords *AIKey
 			return nil, err
 		}
 		if len(found) == 0 && keywords.Year > 0 {
-			found, err = search(ctx, key, title, lang, 0)
+			found, err = search(ctx, key, query, lang, 0)
 			if err != nil {
 				if len(results) > 0 {
 					return results, nil
