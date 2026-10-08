@@ -336,6 +336,7 @@ func (s *Scanner) scrapeMovie(ctx context.Context, item *models.Item, set tmdb.S
         }
         if detail == nil {
                 title, year := item.Name, item.Year
+                matchYear := year
                 logx.TaskLog("scrape", "info", "TMDB 搜索电影：「%s」(%d)", title, year)
                 results, err := tmdb.SearchMovie(ctx, set.APIKey, title, set.Language, year)
                 if err != nil {
@@ -350,12 +351,12 @@ func (s *Scanner) scrapeMovie(ctx context.Context, item *models.Item, set tmdb.S
                 }
                 if len(results) == 0 {
                         // AI 识别辅助：从文件路径提取关键词后重试搜索
-                        if aiTitle, aiYear, ok := s.aiRetrySearch(ctx, "Movie", item.Path, item.Name, item.Year); ok {
-                                logx.TaskLog("scrape", "info", "AI 关键词重搜电影：「%s」(%d)", aiTitle, aiYear)
-                                results, err = tmdb.SearchMovie(ctx, set.APIKey, aiTitle, set.Language, aiYear)
-                                if err == nil && len(results) == 0 && aiYear > 0 {
-                                        results, err = tmdb.SearchMovie(ctx, set.APIKey, aiTitle, set.Language, 0)
+                        if keywords, ok := s.aiRetrySearch(ctx, "Movie", item.Path, item.Name, item.Year); ok {
+                                logx.TaskLog("scrape", "info", "AI 关键词重搜电影：「%s」/「%s」(%d)", keywords.Title, keywords.OriginalTitle, keywords.Year)
+                                if keywords.Year > 0 {
+                                        matchYear = keywords.Year
                                 }
+                                results, err = searchWithAIKeywords(ctx, set.APIKey, set.Language, keywords, tmdb.SearchMovie)
                                 if err != nil {
                                         return err
                                 }
@@ -366,7 +367,7 @@ func (s *Scanner) scrapeMovie(ctx context.Context, item *models.Item, set tmdb.S
                         logx.InfoC(logx.CatTMDB, "TMDB 未找到电影: %s (%d)", title, year)
                         return fmt.Errorf("TMDB 未找到匹配: %s (%d)", title, year)
                 }
-				best := bestMovieResult(results, year)
+				best := bestMovieResult(results, matchYear)
 				searchPosterPath = best.PosterPath
                 logx.TaskLog("scrape", "info", "命中《%s》(首播 %s) TmdbID=%d", best.Title, best.ReleaseDate, best.ID)
                 d, err := tmdb.GetMovie(ctx, set.APIKey, best.ID, set.Language)
@@ -404,27 +405,78 @@ func bestMovieResult(results []tmdb.SearchResult, year int) tmdb.SearchResult {
 		return tmdb.SearchResult{}
 	}
 	best := results[0]
-	if year > 0 {
-		foundYear := false
-		for _, result := range results {
-			if parseYear(result.ReleaseDate) != year {
-				continue
-			}
-			if !foundYear || best.PosterPath == "" && result.PosterPath != "" {
-				best = result
-			}
-			foundYear = true
-			if best.PosterPath != "" {
-				return best
-			}
-		}
-		if foundYear {
-			return best
+	bestYearMatch := year > 0 && parseYear(best.ReleaseDate) == year
+	for _, result := range results {
+		resultYearMatch := year > 0 && parseYear(result.ReleaseDate) == year
+		sameYearMatch := resultYearMatch == bestYearMatch
+		betterArtwork := best.PosterPath == "" && result.PosterPath != ""
+		sameArtworkAndHigherRating := (best.PosterPath != "") == (result.PosterPath != "") && result.VoteAverage > best.VoteAverage
+		if resultYearMatch && !bestYearMatch || sameYearMatch && (betterArtwork || sameArtworkAndHigherRating) {
+			best = result
+			bestYearMatch = resultYearMatch
 		}
 	}
+	return best
+}
+
+func searchWithAIKeywords(ctx context.Context, key, lang string, keywords *AIKeywords, search func(context.Context, string, string, string, int) ([]tmdb.SearchResult, error)) ([]tmdb.SearchResult, error) {
+	if keywords == nil {
+		return nil, nil
+	}
+	titles := []string{strings.TrimSpace(keywords.Title), strings.TrimSpace(keywords.OriginalTitle)}
+	seenTitles := make(map[string]struct{}, len(titles))
+	seenResults := make(map[int]struct{})
+	var results []tmdb.SearchResult
+	for _, title := range titles {
+		if title == "" {
+			continue
+		}
+		keyTitle := strings.ToLower(title)
+		if _, ok := seenTitles[keyTitle]; ok {
+			continue
+		}
+		seenTitles[keyTitle] = struct{}{}
+		found, err := search(ctx, key, title, lang, keywords.Year)
+		if err != nil {
+			if len(results) > 0 {
+				return results, nil
+			}
+			return nil, err
+		}
+		if len(found) == 0 && keywords.Year > 0 {
+			found, err = search(ctx, key, title, lang, 0)
+			if err != nil {
+				if len(results) > 0 {
+					return results, nil
+				}
+				return nil, err
+			}
+		}
+		for _, result := range found {
+			if _, ok := seenResults[result.ID]; ok {
+				continue
+			}
+			seenResults[result.ID] = struct{}{}
+			results = append(results, result)
+		}
+	}
+	return results, nil
+}
+
+func bestTVResult(results []tmdb.SearchResult, year int) tmdb.SearchResult {
+	if len(results) == 0 {
+		return tmdb.SearchResult{}
+	}
+	best := results[0]
+	bestYearMatch := year > 0 && parseYear(best.FirstAirDate) == year
 	for _, result := range results {
-		if result.PosterPath != "" {
-			return result
+		resultYearMatch := year > 0 && parseYear(result.FirstAirDate) == year
+		sameYearMatch := resultYearMatch == bestYearMatch
+		betterArtwork := best.PosterPath == "" && result.PosterPath != ""
+		sameArtworkAndHigherRating := (best.PosterPath != "") == (result.PosterPath != "") && result.VoteAverage > best.VoteAverage
+		if resultYearMatch && !bestYearMatch || sameYearMatch && (betterArtwork || sameArtworkAndHigherRating) {
+			best = result
+			bestYearMatch = resultYearMatch
 		}
 	}
 	return best
@@ -540,6 +592,7 @@ func (s *Scanner) scrapeSeries(ctx context.Context, item *models.Item, set tmdb.
         }
         if detail == nil {
                 title, year := item.Name, item.Year
+                matchYear := year
                 logx.TaskLog("scrape", "info", "TMDB 搜索剧集：「%s」(%d)", title, year)
                 results, err := tmdb.SearchTV(ctx, set.APIKey, title, set.Language, year)
                 if err != nil {
@@ -554,12 +607,12 @@ func (s *Scanner) scrapeSeries(ctx context.Context, item *models.Item, set tmdb.
                 }
                 if len(results) == 0 {
                         // AI 识别辅助：从文件路径提取关键词后重试搜索
-                        if aiTitle, aiYear, ok := s.aiRetrySearch(ctx, "Series", item.Path, item.Name, item.Year); ok {
-                                logx.TaskLog("scrape", "info", "AI 关键词重搜剧集：「%s」(%d)", aiTitle, aiYear)
-                                results, err = tmdb.SearchTV(ctx, set.APIKey, aiTitle, set.Language, aiYear)
-                                if err == nil && len(results) == 0 && aiYear > 0 {
-                                        results, err = tmdb.SearchTV(ctx, set.APIKey, aiTitle, set.Language, 0)
+                        if keywords, ok := s.aiRetrySearch(ctx, "Series", item.Path, item.Name, item.Year); ok {
+                                logx.TaskLog("scrape", "info", "AI 关键词重搜剧集：「%s」/「%s」(%d)", keywords.Title, keywords.OriginalTitle, keywords.Year)
+                                if keywords.Year > 0 {
+                                        matchYear = keywords.Year
                                 }
+                                results, err = searchWithAIKeywords(ctx, set.APIKey, set.Language, keywords, tmdb.SearchTV)
                                 if err != nil {
                                         return err
                                 }
@@ -570,15 +623,7 @@ func (s *Scanner) scrapeSeries(ctx context.Context, item *models.Item, set tmdb.
                         logx.InfoC(logx.CatTMDB, "TMDB 未找到剧集: %s", title)
                         return fmt.Errorf("TMDB 未找到匹配: %s", title)
                 }
-                best := results[0]
-                if year > 0 {
-                        for _, r := range results {
-                                if parseYear(r.FirstAirDate) == year {
-                                        best = r
-                                        break
-                                }
-                        }
-                }
+                best := bestTVResult(results, matchYear)
                 logx.TaskLog("scrape", "info", "命中《%s》(首播 %s) TmdbID=%d", best.Name, best.FirstAirDate, best.ID)
                 d, err := tmdb.GetTV(ctx, set.APIKey, best.ID, set.Language)
                 if err != nil {

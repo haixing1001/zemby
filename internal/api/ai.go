@@ -47,25 +47,41 @@ func (a *App) adminAI(w http.ResponseWriter, r *http.Request) {
 		cfg.Enabled = *b.Enabled
 	}
 	if b.BaseURL != nil {
-		u := strings.TrimRight(strings.TrimSpace(*b.BaseURL), "/")
-		if u != "" && !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
-			a.fail(w, 400, "API 地址需以 http:// 或 https:// 开头")
+		u, err := scanner.NormalizeAIBaseURL(*b.BaseURL)
+		if err != nil {
+			a.fail(w, 400, err.Error())
 			return
 		}
 		cfg.BaseURL = u
 	}
 	// APIKey 含掩码（未修改）时不覆盖
-	if b.APIKey != nil && !strings.Contains(*b.APIKey, "****") {
-		cfg.APIKey = strings.TrimSpace(*b.APIKey)
+	if b.APIKey != nil {
+		incomingKey := strings.TrimSpace(*b.APIKey)
+		maskedCurrent := cfg.APIKey
+		if len(maskedCurrent) > 8 {
+			maskedCurrent = maskedCurrent[:4] + "****" + maskedCurrent[len(maskedCurrent)-4:]
+		}
+		if incomingKey != "" && incomingKey != maskedCurrent {
+			cfg.APIKey = incomingKey
+		}
 	}
 	if b.Model != nil {
 		cfg.Model = strings.TrimSpace(*b.Model)
 	}
+	normalizedBaseURL, err := scanner.NormalizeAIBaseURL(cfg.BaseURL)
+	if err != nil {
+		a.fail(w, 400, err.Error())
+		return
+	}
+	cfg.BaseURL = normalizedBaseURL
 	if cfg.Enabled && (cfg.BaseURL == "" || cfg.APIKey == "" || cfg.Model == "") {
 		a.fail(w, 400, "启用前请完整填写 API 地址、密钥与模型名")
 		return
 	}
-	scanner.SaveAIConfig(cfg)
+	if err := scanner.SaveAIConfig(cfg); err != nil {
+		a.fail(w, 500, "AI 配置保存失败")
+		return
+	}
 	logx.InfoC(logx.CatAI, "AI 识别辅助配置已更新（启用=%v 模型=%s）", cfg.Enabled, cfg.Model)
 	a.json(w, 200, M{"OK": true})
 }
@@ -82,7 +98,10 @@ func (a *App) adminAITest(w http.ResponseWriter, r *http.Request) {
 		Name string `json:"Name"`
 		Year int    `json:"Year"`
 	}
-	_ = bodyJSON(r, &b)
+	if err := bodyJSON(r, &b); err != nil {
+		a.fail(w, 400, "请求体格式错误")
+		return
+	}
 	if b.Type != "Series" {
 		b.Type = "Movie"
 	}

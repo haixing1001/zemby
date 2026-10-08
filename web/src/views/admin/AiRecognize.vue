@@ -9,7 +9,7 @@
         <div class="set-row">
           <div>
             <div class="t">启用 AI 识别辅助</div>
-            <div class="d">TMDB 搜索无结果时，将文件完整路径交给 AI 提取真实片名与年份，再用关键词重新搜索 TMDB。仅在首次搜索失败时调用，不会影响正常识别速度。</div>
+            <div class="d">TMDB 使用原片名并尝试有年份、无年份搜索仍无结果时，才调用一次 AI；识别结果中的常用名和外文原名都会用于重搜，避免正常刮削增加 AI 调用。</div>
           </div>
           <label class="switch"><input type="checkbox" v-model="ai.Enabled" @change="save" /><span class="track"></span><span class="knob"></span></label>
         </div>
@@ -29,14 +29,14 @@
 
         <!-- API 地址 -->
         <div class="set-row" style="flex-wrap:wrap;gap:12px;">
-          <div style="min-width:130px;"><div class="t">API 地址</div></div>
-          <input v-model="ai.BaseURL" placeholder="https://api.openai.com/v1" style="width:340px;" />
+          <div style="min-width:130px;"><div class="t">API 根地址</div></div>
+          <input v-model="ai.BaseURL" placeholder="https://api.openai.com/v1" autocomplete="url" style="width:340px;" />
         </div>
 
         <!-- API Key -->
         <div class="set-row" style="flex-wrap:wrap;gap:12px;">
           <div style="min-width:130px;"><div class="t">API Key</div></div>
-          <input v-model="ai.APIKey" :placeholder="ai.HasKey ? '已配置（留空保持不变）' : 'sk-...'" style="width:340px;" />
+          <input v-model="ai.APIKey" type="password" autocomplete="new-password" :placeholder="ai.HasKey ? '已配置（留空保持不变）' : 'sk-...'" style="width:340px;" />
         </div>
 
         <!-- 模型 -->
@@ -49,8 +49,8 @@
           <button class="btn" @click="save" :disabled="saving">{{ saving ? '保存中…' : '保存' }}</button>
         </div>
         <p class="muted" style="font-size:12.5px;">
-          兼容任意 OpenAI Chat Completions 风格接口（OpenAI / DeepSeek / 智谱GLM / Kimi / Ollama 等均支持）。
-          识别结果与 AI 调用记录可在「日志管理 → AI识别」分类查看。
+          兼容 OpenAI Chat Completions 风格接口；API 根地址也可填写完整的 /chat/completions 地址。
+          请求只发送文件名和最近两级目录，不包含媒体库的宿主机绝对路径。识别日志可在「日志管理 → AI识别」查看。
         </p>
       </div>
     </div>
@@ -59,7 +59,7 @@
     <div class="collapse-sec">
       <div class="body" style="padding:2px 16px 16px;">
         <div class="t" style="margin:10px 0 4px;">识别测试</div>
-        <div class="d" style="margin-bottom:10px;">输入一个真实的文件路径模拟刮削场景，验证 AI 配置是否可用：</div>
+        <div class="d" style="margin-bottom:10px;">输入示例文件路径，预览 AI 提取的名称和年份；发送给模型的只有文件名及最近两级目录：</div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
           <select v-model="test.Type" style="width:110px;">
             <option value="Movie">电影</option>
