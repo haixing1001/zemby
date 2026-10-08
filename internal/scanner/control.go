@@ -15,6 +15,7 @@ import (
         "go-emby/internal/db"
         "go-emby/internal/logx"
         "go-emby/internal/models"
+	"go-emby/internal/tmdb"
 )
 
 // ============================================================
@@ -152,16 +153,16 @@ func GetScrapeState() string {
 // EnqueueAllUnscraped 将所有未刮削条目入队，返回入队数量。
 func (s *Scanner) EnqueueAllUnscraped() int {
         var ids []string
-        db.DB.Model(&models.Item{}).Where("type IN ? AND scraped = ?", []string{"Movie", "Series"}, false).Pluck("id", &ids)
+	query := db.DB.Model(&models.Item{}).Where("type IN ? AND scraped = ?", []string{"Movie", "Series"}, false)
+	if tmdb.LoadSettings().DownloadImgs {
+		query = db.DB.Model(&models.Item{}).Where("type IN ? AND (scraped = ? OR (type = 'Movie' AND poster = '' AND scrape_error = ''))", []string{"Movie", "Series"}, false)
+	}
+	query.Pluck("id", &ids)
         n := 0
         for _, id := range ids {
-                probeWaiting.Add(1)
-                select {
-                case s.scrapeQueue <- scrapeTask{itemID: id}:
+		if s.enqueueScrape(id) {
                         n++
-                default:
-                        probeWaiting.Add(-1)
-                }
+		}
         }
         if n > 0 {
                 SetScrapeState("running")
@@ -171,35 +172,24 @@ func (s *Scanner) EnqueueAllUnscraped() int {
 
 // DrainScrape 清空刮削队列，返回丢弃数量。
 func (s *Scanner) DrainScrape() int {
-        n := 0
-        for {
-                select {
-                case <-s.scrapeQueue:
-                        n++
-                default:
-                        probeWaiting.Add(int64(-n))
-                        return n
-                }
-        }
+	n := s.scrapeQueue.Drain()
+	probeWaiting.Add(-int64(n))
+	return n
 }
 
 // RetryFailedScrape 重试全部失败条目：清除错误标记并入队。
 func (s *Scanner) RetryFailedScrape() int {
         var ids []string
-        db.DB.Model(&models.Item{}).Where("type IN ? AND scraped = ? AND scrape_error != ''", []string{"Movie", "Series"}, false).Pluck("id", &ids)
+        db.DB.Model(&models.Item{}).Where("type IN ? AND scrape_error != ''", []string{"Movie", "Series"}).Pluck("id", &ids)
         if len(ids) == 0 {
                 return 0
         }
         db.DB.Model(&models.Item{}).Where("id IN ?", ids).Update("scrape_error", "")
         n := 0
         for _, id := range ids {
-                probeWaiting.Add(1)
-                select {
-                case s.scrapeQueue <- scrapeTask{itemID: id}:
+		if s.enqueueScrape(id) {
                         n++
-                default:
-                        probeWaiting.Add(-1)
-                }
+		}
         }
         if n > 0 {
                 SetScrapeState("running")
@@ -210,7 +200,7 @@ func (s *Scanner) RetryFailedScrape() int {
 // FailedScrapes 失败清单。
 func FailedScrapes(limit int) []map[string]any {
         var items []models.Item
-        db.DB.Where("type IN ? AND scraped = ? AND scrape_error != ''", []string{"Movie", "Series"}, false).
+        db.DB.Where("type IN ? AND scrape_error != ''", []string{"Movie", "Series"}).
                 Order("updated_at DESC").Limit(limit).Find(&items)
         out := []map[string]any{}
         for i := range items {
@@ -220,6 +210,25 @@ func FailedScrapes(limit int) []map[string]any {
                 })
         }
         return out
+}
+
+// ScrapePendingCount includes movies whose metadata is marked scraped but whose
+// poster is missing, when image downloads are enabled.
+func ScrapePendingCount() int64 {
+	query := db.DB.Model(&models.Item{}).Where("type IN ? AND scraped = ?", []string{"Movie", "Series"}, false)
+	if tmdb.LoadSettings().DownloadImgs {
+		query = db.DB.Model(&models.Item{}).Where("type IN ? AND (scraped = ? OR (type = 'Movie' AND poster = '' AND scrape_error = ''))", []string{"Movie", "Series"}, false)
+	}
+	var count int64
+	query.Count(&count)
+	return count
+}
+
+// ScrapeFailedCount includes image download failures from otherwise successful metadata scrapes.
+func ScrapeFailedCount() int64 {
+	var count int64
+	db.DB.Model(&models.Item{}).Where("type IN ? AND scrape_error != ''", []string{"Movie", "Series"}).Count(&count)
+	return count
 }
 
 // ============================================================

@@ -29,8 +29,8 @@ type Scanner struct {
         stopFlag map[string]bool // libraryID -> requested stop
 
         // 探测/刮削队列
-        probeQueue  chan probeTask
-        scrapeQueue chan scrapeTask
+	probeQueue  chan probeTask
+	scrapeQueue *scrapeTaskQueue
         taskWG      sync.WaitGroup
 }
 
@@ -53,7 +53,7 @@ func New(cfg *config.Config) *Scanner {
                 running:     map[string]bool{},
                 stopFlag:    map[string]bool{},
                 probeQueue:  make(chan probeTask, 4096),
-                scrapeQueue: make(chan scrapeTask, 4096),
+			scrapeQueue: newScrapeTaskQueue(),
         }
         dataDirOnce.Do(func() { dataDirValue = cfg.DataDir })
         s.StartWorkers()
@@ -63,6 +63,7 @@ func New(cfg *config.Config) *Scanner {
         }
         // 恢复增强功能运行时状态（文件监听）+ 首字母检索存量回填
         s.initEnhance()
+		go s.enqueueMissingMoviePosters()
         return s
 }
 
@@ -344,6 +345,7 @@ func (s *Scanner) upsertMovie(lib *models.Library, vf videoFile) error {
                 item.ID = existing.ID
 		item.DateCreated = existing.DateCreated
                 item.Scraped = existing.Scraped
+                item.ScrapeError = existing.ScrapeError
                 item.Poster, item.Backdrop, item.Thumb, item.Logo = existing.Poster, existing.Backdrop, existing.Thumb, existing.Logo
                 item.ProviderIDs, item.Overview = existing.ProviderIDs, existing.Overview
                 item.Name, item.OriginalTitle = existing.Name, existing.OriginalTitle
@@ -376,7 +378,7 @@ func (s *Scanner) upsertMovie(lib *models.Library, vf videoFile) error {
         if s.needsProbe(&item) {
                 s.enqueueProbe(&item, src, vf.mtime)
         }
-        if !item.Scraped {
+		if shouldQueueScrape(&item) {
                 s.enqueueScrape(item.ID)
         }
         return nil

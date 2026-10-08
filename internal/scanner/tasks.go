@@ -6,6 +6,7 @@ import (
         "context"
         "encoding/json"
         "fmt"
+	"os"
         "strings"
         "strconv"
         "sync"
@@ -189,26 +190,70 @@ func (s *Scanner) enqueueProbeTask(task probeTask) bool {
 }
 
 // enqueueScrape 加入刮削队列。
-func (s *Scanner) enqueueScrape(itemID string) {
+func (s *Scanner) enqueueScrape(itemID string) bool {
         probeWaiting.Add(1)
-        select {
-        case s.scrapeQueue <- scrapeTask{itemID: itemID}:
-        default:
+	if !s.scrapeQueue.Push(scrapeTask{itemID: itemID}) {
                 probeWaiting.Add(-1)
+		return false
         }
+	return true
+}
+
+func shouldQueueScrape(item *models.Item) bool {
+	if item == nil || item.ScrapeError != "" {
+		return false
+	}
+	if !item.Scraped {
+		return true
+	}
+	if item.Type != "Movie" || !LoadEnhanceConfig().TMDB || !tmdb.LoadSettings().DownloadImgs {
+		return false
+	}
+	if item.Poster == "" {
+		return true
+	}
+	info, err := os.Stat(item.Poster)
+	return err != nil || info.IsDir()
+}
+
+func (s *Scanner) enqueueMissingMoviePosters() {
+	if !LoadEnhanceConfig().TMDB || !LoadScrapeConfig().Enabled {
+		return
+	}
+	settings := tmdb.LoadSettings()
+	if settings.APIKey == "" || !settings.DownloadImgs {
+		return
+	}
+	var items []models.Item
+	if err := db.DB.Select("id, poster").Where("type = ? AND scraped = ? AND scrape_error = ''", "Movie", true).Find(&items).Error; err != nil {
+		logx.WarnC(logx.CatScrape, "检查缺失电影海报失败：%v", err)
+		return
+	}
+	queued := 0
+	for i := range items {
+		if !hasImageFile(items[i].Poster) && s.enqueueScrape(items[i].ID) {
+			queued++
+		}
+	}
+	if queued > 0 {
+		logx.InfoC(logx.CatScrape, "启动时发现 %d 部电影缺少海报，已加入修复队列", queued)
+	}
 }
 
 // scrapeWorker 刮削工作线程。
 func (s *Scanner) scrapeWorker() {
-        for t := range s.scrapeQueue {
+	for {
+		t := s.scrapeQueue.Pop()
                 probeWaiting.Add(-1)
+		func() {
+			defer s.scrapeQueue.Done(t.itemID)
                 waitWhilePaused()
                 cfg := LoadScrapeConfig()
                 if !cfg.Enabled {
-                        continue // 刮削总开关关闭：丢弃任务
+				return // 刮削总开关关闭：丢弃任务
                 }
                 if !LoadEnhanceConfig().TMDB {
-                        continue // 增强功能「启动TMDB」关闭：静默跳过（开启后可重新批量刮削）
+				return // 增强功能「启动TMDB」关闭：静默跳过（开启后可重新批量刮削）
                 }
                 ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
                 err := s.scrapeItem(ctx, t.itemID)
@@ -219,6 +264,7 @@ func (s *Scanner) scrapeWorker() {
                 } else {
                         db.DB.Model(&models.Item{}).Where("id = ? AND scrape_error != ''", t.itemID).Update("scrape_error", "")
                 }
+		}()
         }
 }
 
@@ -280,6 +326,7 @@ func (s *Scanner) scrapeItem(ctx context.Context, itemID string) error {
 
 func (s *Scanner) scrapeMovie(ctx context.Context, item *models.Item, set tmdb.Settings, ids map[string]string) error {
         var detail *tmdb.MovieDetail
+	searchPosterPath := ""
         if v := ids["Tmdb"]; v != "" {
                 id := atoi(v)
                 d, err := tmdb.GetMovie(ctx, set.APIKey, id, set.Language)
@@ -319,15 +366,8 @@ func (s *Scanner) scrapeMovie(ctx context.Context, item *models.Item, set tmdb.S
                         logx.InfoC(logx.CatTMDB, "TMDB 未找到电影: %s (%d)", title, year)
                         return fmt.Errorf("TMDB 未找到匹配: %s (%d)", title, year)
                 }
-                best := results[0]
-                if year > 0 {
-                        for _, r := range results {
-                                if ry := parseYear(r.ReleaseDate); ry == year {
-                                        best = r
-                                        break
-                                }
-                        }
-                }
+				best := bestMovieResult(results, year)
+				searchPosterPath = best.PosterPath
                 logx.TaskLog("scrape", "info", "命中《%s》(首播 %s) TmdbID=%d", best.Title, best.ReleaseDate, best.ID)
                 d, err := tmdb.GetMovie(ctx, set.APIKey, best.ID, set.Language)
                 if err != nil {
@@ -335,17 +375,68 @@ func (s *Scanner) scrapeMovie(ctx context.Context, item *models.Item, set tmdb.S
                 }
                 detail = d
         }
-        s.applyMovieDetail(item, detail, set)
+		if detail.PosterPath == "" {
+			detail.PosterPath = searchPosterPath
+		}
+		if detail.PosterPath == "" && set.DownloadImgs {
+			if posterPath, err := tmdb.GetMoviePoster(ctx, set.APIKey, detail.ID, set.Language); err == nil {
+				detail.PosterPath = posterPath
+			} else {
+				logx.TaskLog("tmdb", "warn", "获取电影海报列表失败《%s》：%v", item.Name, err)
+			}
+		}
+		imageErr := s.applyMovieDetail(ctx, item, detail, set)
         if err := db.DB.Save(item).Error; err != nil {
                 return err
         }
+		if imageErr != nil {
+			logx.TaskLog("scrape", "error", "电影《%s》元数据已保存，但海报不可用：%v", item.Name, imageErr)
+			return imageErr
+		}
         logx.InfoC(logx.CatScrape, "刮削电影《%s》(%d) 完成", item.Name, item.Year)
         logx.TaskLog("scrape", "info", "电影《%s》(%d) 刮削完成 · 评分 %.1f · 类型 %s · 海报=%v 背景=%v",
                 item.Name, item.Year, item.CommunityRating, item.Genres, item.Poster != "", item.Backdrop != "")
         return nil
 }
 
-func (s *Scanner) applyMovieDetail(item *models.Item, d *tmdb.MovieDetail, set tmdb.Settings) {
+func bestMovieResult(results []tmdb.SearchResult, year int) tmdb.SearchResult {
+	if len(results) == 0 {
+		return tmdb.SearchResult{}
+	}
+	best := results[0]
+	if year > 0 {
+		foundYear := false
+		for _, result := range results {
+			if parseYear(result.ReleaseDate) != year {
+				continue
+			}
+			if !foundYear || best.PosterPath == "" && result.PosterPath != "" {
+				best = result
+			}
+			foundYear = true
+			if best.PosterPath != "" {
+				return best
+			}
+		}
+		if foundYear {
+			return best
+		}
+	}
+	for _, result := range results {
+		if result.PosterPath != "" {
+			return result
+		}
+	}
+	return best
+}
+
+func (s *Scanner) applyMovieDetail(ctx context.Context, item *models.Item, d *tmdb.MovieDetail, set tmdb.Settings) error {
+	if !hasImageFile(item.Poster) {
+		item.Poster = ""
+	}
+	if !hasImageFile(item.Backdrop) {
+		item.Backdrop = ""
+	}
         item.Name = d.Title
         item.OriginalTitle = d.OriginalTitle
         item.Overview = d.Overview
@@ -381,16 +472,39 @@ func (s *Scanner) applyMovieDetail(item *models.Item, d *tmdb.MovieDetail, set t
         item.ProviderIDs = toJSON(ids)
         item.Scraped = true
 
-        // 图片
+        var posterErr error
         if set.DownloadImgs {
-                if p, err := tmdb.DownloadImage(s.metaDir(), item.ID, "w500", d.PosterPath); err == nil {
+                if d.PosterPath == "" {
+                        if !hasImageFile(item.Poster) {
+                                posterErr = fmt.Errorf("TMDB 未提供海报路径")
+                        }
+                } else if p, err := tmdb.DownloadImage(ctx, s.metaDir(), item.ID, "w500", d.PosterPath); err == nil {
                         item.Poster = p
+                } else {
+                        if hasImageFile(item.Poster) {
+                                logx.TaskLog("tmdb", "warn", "下载 TMDB 海报失败，保留现有封面《%s》：%v", item.Name, err)
+                        } else {
+                                posterErr = fmt.Errorf("下载 TMDB 海报失败：%w", err)
+                        }
                 }
-                if b, err := tmdb.DownloadImage(s.metaDir(), item.ID, "w1280", d.BackdropPath); err == nil {
-                        item.Backdrop = b
+                if d.BackdropPath != "" {
+                        if b, err := tmdb.DownloadImage(ctx, s.metaDir(), item.ID, "w1280", d.BackdropPath); err == nil {
+                                item.Backdrop = b
+                        } else {
+                                logx.TaskLog("tmdb", "warn", "下载电影背景图失败《%s》：%v", item.Name, err)
+                        }
                 }
         }
         item.ImageRev = imageRev(item.Poster, item.Backdrop)
+	return posterErr
+}
+
+func hasImageFile(path string) bool {
+	if path == "" {
+		return false
+	}
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular() && info.Size() > 0
 }
 
 // firstFormat 取 ffprobe format_name 首段。
@@ -500,11 +614,17 @@ func (s *Scanner) scrapeSeries(ctx context.Context, item *models.Item, set tmdb.
         item.ProviderIDs = toJSON(map[string]string{"Tmdb": fmt.Sprint(detail.ID)})
         item.Scraped = true
         if set.DownloadImgs {
-                if p, err := tmdb.DownloadImage(s.metaDir(), item.ID, "w500", detail.PosterPath); err == nil {
+                if p, err := tmdb.DownloadImage(ctx, s.metaDir(), item.ID, "w500", detail.PosterPath); err == nil {
                         item.Poster = p
+                } else {
+                        logx.TaskLog("tmdb", "warn", "下载剧集海报失败《%s》：%v", item.Name, err)
                 }
-                if b, err := tmdb.DownloadImage(s.metaDir(), item.ID, "w1280", detail.BackdropPath); err == nil {
+                if detail.BackdropPath != "" {
+                    if b, err := tmdb.DownloadImage(ctx, s.metaDir(), item.ID, "w1280", detail.BackdropPath); err == nil {
                         item.Backdrop = b
+                    } else {
+                        logx.TaskLog("tmdb", "warn", "下载剧集背景图失败《%s》：%v", item.Name, err)
+                    }
                 }
         }
         item.ImageRev = imageRev(item.Poster, item.Backdrop)
@@ -537,8 +657,10 @@ func (s *Scanner) scrapeSeasons(ctx context.Context, series *models.Item, set tm
                 }
                 season.Overview = resp.Overview
                 if set.DownloadImgs && resp.PosterPath != "" {
-                        if p, err := tmdb.DownloadImage(s.metaDir(), season.ID, "w500", resp.PosterPath); err == nil {
+                        if p, err := tmdb.DownloadImage(ctx, s.metaDir(), season.ID, "w500", resp.PosterPath); err == nil {
                                 season.Poster = p
+                        } else {
+                                logx.TaskLog("tmdb", "warn", "下载季海报失败《%s》第 %d 季：%v", series.Name, season.ParentIndexNumber, err)
                         }
                 }
                 season.Scraped = true
@@ -567,8 +689,10 @@ func (s *Scanner) scrapeSeasons(ctx context.Context, series *models.Item, set tm
                                                 ep.RunTimeTicks = int64(e.Runtime) * 60 * 10000000
                                         }
                                         if set.DownloadImgs && e.StillPath != "" {
-                                                if p, err := tmdb.DownloadImage(s.metaDir(), ep.ID, "w300", e.StillPath); err == nil {
+                                                if p, err := tmdb.DownloadImage(ctx, s.metaDir(), ep.ID, "w300", e.StillPath); err == nil {
                                                         ep.Thumb = p
+                                                } else {
+                                                        logx.TaskLog("tmdb", "warn", "下载剧集缩略图失败《%s》：%v", ep.Name, err)
                                                 }
                                         }
                                         ep.Scraped = true

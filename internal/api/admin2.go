@@ -160,9 +160,8 @@ func (a *App) adminDashboard(w http.ResponseWriter, r *http.Request) {
         }
 
         // 刮削/提取任务计数
-        var scrapePending, scrapeFailed int64
-        a.db.Model(&models.Item{}).Where("type IN ? AND scraped = ?", []string{"Movie", "Series"}, false).Count(&scrapePending)
-        a.db.Model(&models.Item{}).Where("type IN ? AND scraped = ? AND scrape_error != ''", []string{"Movie", "Series"}, false).Count(&scrapeFailed)
+		scrapePending := scanner.ScrapePendingCount()
+		scrapeFailed := scanner.ScrapeFailedCount()
 
         uptime := time.Since(procStart)
         dur := func(d time.Duration) string {
@@ -422,10 +421,8 @@ func (a *App) adminScrapeConfig(w http.ResponseWriter, r *http.Request) {
 
 // adminScrapeState 刮削任务状态。
 func (a *App) adminScrapeState(w http.ResponseWriter, r *http.Request) {
-        var pending int64
-        a.db.Model(&models.Item{}).Where("type IN ? AND scraped = ?", []string{"Movie", "Series"}, false).Count(&pending)
-        var failed int64
-        a.db.Model(&models.Item{}).Where("type IN ? AND scraped = ? AND scrape_error != ''", []string{"Movie", "Series"}, false).Count(&failed)
+	pending := scanner.ScrapePendingCount()
+	failed := scanner.ScrapeFailedCount()
         a.json(w, 200, M{
                 "State": scanner.GetScrapeState(), "Pending": pending, "Failed": failed,
                 "Logs": logx.TaskLogSnapshot("scrape", 300),

@@ -6,6 +6,7 @@ import (
         "encoding/json"
         "fmt"
         "io"
+	"mime"
         "net/http"
         "net/url"
         "os"
@@ -191,6 +192,33 @@ func GetMovie(ctx context.Context, key string, id int, lang string) (*MovieDetai
         return &d, nil
 }
 
+// GetMoviePoster returns the best available poster path when movie details do
+// not include one. This happens for localized details even when TMDB has images.
+func GetMoviePoster(ctx context.Context, key string, id int, lang string) (string, error) {
+	var result struct {
+		Posters []struct {
+			FilePath string `json:"file_path"`
+			Language string `json:"iso_639_1"`
+		} `json:"posters"`
+	}
+	q := url.Values{"include_image_language": {lang + ",null"}}
+	if err := get(ctx, key, fmt.Sprintf("/movie/%d/images", id), q, &result); err != nil {
+		return "", err
+	}
+	preferred := strings.SplitN(lang, "-", 2)[0]
+	for _, poster := range result.Posters {
+		if poster.FilePath != "" && poster.Language == preferred {
+			return poster.FilePath, nil
+		}
+	}
+	for _, poster := range result.Posters {
+		if poster.FilePath != "" {
+			return poster.FilePath, nil
+		}
+	}
+	return "", nil
+}
+
 // GetTV 剧集详情。
 func GetTV(ctx context.Context, key string, id int, lang string) (*TVDetail, error) {
         var d TVDetail
@@ -233,7 +261,7 @@ func GetSeason(ctx context.Context, key string, tvID, season int, lang string) (
 }
 
 // DownloadImage 下载 TMDB 图片到本地 metaDir/itemID/ 下，返回本地路径。
-func DownloadImage(metaDir, itemID string, size, path string) (string, error) {
+func DownloadImage(ctx context.Context, metaDir, itemID string, size, path string) (string, error) {
         if path == "" {
                 return "", fmt.Errorf("empty image path")
         }
@@ -245,31 +273,103 @@ func DownloadImage(metaDir, itemID string, size, path string) (string, error) {
                 return "", err
         }
         local := filepath.Join(dir, sanitize(size+"-"+filepath.Base(path)))
-        if _, err := os.Stat(local); err == nil {
+        if validCachedImage(local) {
                 return local, nil
         }
+        _ = os.Remove(local)
         u := imgBase + "/" + size + path
-        req, err := http.NewRequest("GET", u, nil)
-        if err != nil {
-                return "", err
+        var lastErr error
+        for attempt := 0; attempt < 3; attempt++ {
+                req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+                if err != nil {
+                        return "", err
+                }
+                resp, err := client.Do(req)
+                if err != nil {
+                        lastErr = err
+                } else if resp.StatusCode != http.StatusOK {
+                        body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+                        resp.Body.Close()
+                        lastErr = fmt.Errorf("image %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+                        if resp.StatusCode != http.StatusTooManyRequests && resp.StatusCode < 500 {
+                                return "", lastErr
+                        }
+                } else {
+                        data, readErr := io.ReadAll(io.LimitReader(resp.Body, maxImgSize+1))
+                        resp.Body.Close()
+                        if readErr != nil {
+                                lastErr = readErr
+                        } else if len(data) > maxImgSize {
+                                return "", fmt.Errorf("image exceeds %d bytes", maxImgSize)
+                        } else if !isImageData(data) {
+                                lastErr = fmt.Errorf("invalid image response from %s", u)
+                        } else {
+                                if err := writeImageAtomically(dir, local, data); err != nil {
+                                        return "", err
+                                }
+                                logx.DetailC(logx.CatTMDB, "info", u, "已下载 TMDB 图片 %s", filepath.Base(local))
+                                return local, nil
+                        }
+                }
+                if attempt < 2 {
+                        delay := time.Duration(attempt+1) * 300 * time.Millisecond
+                        timer := time.NewTimer(delay)
+                        select {
+                        case <-ctx.Done():
+                                timer.Stop()
+                                return "", ctx.Err()
+                        case <-timer.C:
+                        }
+                }
         }
-        resp, err := client.Do(req)
-        if err != nil {
-                return "", err
-        }
-        defer resp.Body.Close()
-        if resp.StatusCode != 200 {
-                return "", fmt.Errorf("image %d", resp.StatusCode)
-        }
-        data, err := io.ReadAll(io.LimitReader(resp.Body, maxImgSize))
-        if err != nil {
-                return "", err
-        }
-        if err := os.WriteFile(local, data, 0o644); err != nil {
-                return "", err
-        }
-        logx.DetailC(logx.CatTMDB, "info", u, "已下载 TMDB 图片 %s", filepath.Base(local))
-        return local, nil
+        return "", lastErr
+}
+
+func validCachedImage(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > maxImgSize {
+		return false
+	}
+	buf := make([]byte, 512)
+	n, err := f.Read(buf)
+	return isImageData(buf[:n]) && (err == nil || err == io.EOF)
+}
+
+func isImageData(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	if len(data) > 512 {
+		data = data[:512]
+	}
+	contentType, _, err := mime.ParseMediaType(http.DetectContentType(data))
+	return err == nil && strings.HasPrefix(contentType, "image/")
+}
+
+func writeImageAtomically(dir, local string, data []byte) error {
+	tmp, err := os.CreateTemp(dir, ".tmdb-image-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, local)
 }
 
 func sanitize(name string) string {
