@@ -296,33 +296,14 @@ func (i *Item) TmdbRouteID() string {
         return kind + "-" + tmdbID
 }
 
-// ParseTmdbRouteID 解析前台 TMDB 路由身份，并兼容上一版 tmdb-movie-* / tmdb-tv-* 链接。
+// ParseTmdbRouteID 解析前台 TMDB 路由身份。
 func ParseTmdbRouteID(routeID string) (kind string, tmdbID string, ok bool) {
         routeID = strings.ToLower(strings.TrimSpace(routeID))
-        if kind, tmdbID, ok = parseCurrentTmdbRouteID(routeID); ok {
-                return kind, tmdbID, true
-        }
-        return parseLegacyTmdbRouteID(routeID)
-}
-
-func parseCurrentTmdbRouteID(routeID string) (kind string, tmdbID string, ok bool) {
         if !strings.HasPrefix(routeID, "movie-") && !strings.HasPrefix(routeID, "tv-") {
                 return "", "", false
         }
-        parts := strings.SplitN(routeID, "-", 2)
-        return parts[0], parts[1], validTmdbRouteID(parts[0], parts[1])
-}
-
-func parseLegacyTmdbRouteID(routeID string) (kind string, tmdbID string, ok bool) {
-        const prefix = "tmdb-"
-        if !strings.HasPrefix(routeID, prefix) {
-                return "", "", false
-        }
-        parts := strings.Split(strings.TrimPrefix(routeID, prefix), "-")
-        if len(parts) != 2 {
-                return "", "", false
-        }
-        return parts[0], parts[1], validTmdbRouteID(parts[0], parts[1])
+        kind, tmdbID, _ = strings.Cut(routeID, "-")
+        return kind, tmdbID, validTmdbRouteID(kind, tmdbID)
 }
 
 func validTmdbRouteID(kind, tmdbID string) bool {

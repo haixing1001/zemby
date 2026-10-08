@@ -460,18 +460,14 @@ func tmdbFolderName(item *models.Item) (string, error) {
         if tmdbID == "" {
                 return "", fmt.Errorf("条目缺少 TMDB ID")
         }
-        kind := strings.TrimSpace(item.TmdbKind)
-        if kind == "" {
-                kind = models.TmdbKindForItemType(item.Type)
-        }
-        if kind == "" {
+        kind := ""
+        switch item.Type {
+        case "Movie":
                 kind = "movie"
-        }
-        if kind != "movie" && kind != "tv" && kind != "season" && kind != "episode" {
-                kind = "movie"
-        }
-        if kind != "movie" {
+        case "Series":
                 kind = "tv"
+        default:
+                return "", fmt.Errorf("不支持的 TMDB 资产条目类型: %s", item.Type)
         }
         return kind + "-tmdb-" + tmdbID, nil
 }
