@@ -6,6 +6,7 @@ import (
         "context"
         "encoding/json"
         "fmt"
+        "io"
 	"os"
         "strings"
         "strconv"
@@ -466,7 +467,13 @@ func tmdbFolderName(item *models.Item) (string, error) {
         if kind == "" {
                 kind = "movie"
         }
-        return "tmdb-" + kind + "-" + tmdbID, nil
+        if kind != "movie" && kind != "tv" && kind != "season" && kind != "episode" {
+                kind = "movie"
+        }
+        if kind != "movie" {
+                kind = "tv"
+        }
+        return kind + "-tmdb-" + tmdbID, nil
 }
 
 func rawJSONField(raw string) any {
@@ -474,6 +481,130 @@ func rawJSONField(raw string) any {
                 return nil
         }
         return json.RawMessage(raw)
+}
+
+// migrateTmdbAssetFolders 将旧版 tmdb-movie-* / tmdb-tv-* 目录迁到 movie-tmdb-* / tv-tmdb-*，
+// 并同步修正数据库中的本地图片路径；目标目录已存在时先补齐缺失文件，成功后再清理旧目录。
+func migrateTmdbAssetFolders() {
+        saveDir := LoadProbeConfig().SaveDir
+        entries, err := os.ReadDir(saveDir)
+        if err != nil {
+                return
+        }
+        for _, entry := range entries {
+                if !entry.IsDir() {
+                        continue
+                }
+                kind, tmdbID, ok := parseLegacyTmdbFolderName(entry.Name())
+                if !ok {
+                        continue
+                }
+                oldDir := filepath.Join(saveDir, entry.Name())
+                newDir := filepath.Join(saveDir, kind+"-tmdb-"+tmdbID)
+                if _, err := os.Stat(newDir); os.IsNotExist(err) {
+                        if err := os.Rename(oldDir, newDir); err != nil {
+                                logx.WarnC(logx.CatScrape, "迁移 TMDB 资产目录失败 %s → %s：%v", oldDir, newDir, err)
+                                continue
+                        }
+                } else if err == nil {
+                        if err := copyMissingFiles(oldDir, newDir); err != nil {
+                                logx.WarnC(logx.CatScrape, "合并 TMDB 资产目录失败 %s → %s：%v", oldDir, newDir, err)
+                                continue
+                        }
+                        if err := os.RemoveAll(oldDir); err != nil {
+                                logx.WarnC(logx.CatScrape, "清理旧 TMDB 资产目录失败 %s：%v", oldDir, err)
+                        }
+                }
+                updateTmdbItemAssetPaths(oldDir, newDir)
+                logx.InfoC(logx.CatScrape, "TMDB 资产目录已迁移：%s → %s", entry.Name(), kind+"-tmdb-"+tmdbID)
+        }
+}
+
+func parseLegacyTmdbFolderName(name string) (kind string, tmdbID string, ok bool) {
+        if !strings.HasPrefix(name, "tmdb-movie-") && !strings.HasPrefix(name, "tmdb-tv-") {
+                return "", "", false
+        }
+        parts := strings.Split(name, "-")
+        if len(parts) != 3 || parts[2] == "" {
+                return "", "", false
+        }
+        for _, ch := range parts[2] {
+                if ch < '0' || ch > '9' {
+                        return "", "", false
+                }
+        }
+        return parts[1], parts[2], true
+}
+
+func copyMissingFiles(src, dst string) error {
+        entries, err := os.ReadDir(src)
+        if err != nil {
+                return err
+        }
+        if err := os.MkdirAll(dst, 0o755); err != nil {
+                return err
+        }
+        for _, entry := range entries {
+                from := filepath.Join(src, entry.Name())
+                to := filepath.Join(dst, entry.Name())
+                if entry.IsDir() {
+                        if err := copyMissingFiles(from, to); err != nil {
+                                return err
+                        }
+                        continue
+                }
+                if _, err := os.Stat(to); err == nil {
+                        continue
+                }
+                in, err := os.Open(from)
+                if err != nil {
+                        return err
+                }
+                out, err := os.Create(to)
+                if err != nil {
+                        in.Close()
+                        return err
+                }
+                _, err = io.Copy(out, in)
+                closeErr := out.Close()
+                in.Close()
+                if err != nil {
+                        return err
+                }
+                if closeErr != nil {
+                        return closeErr
+                }
+        }
+        return nil
+}
+
+func updateTmdbItemAssetPaths(oldDir, newDir string) {
+        var items []models.Item
+        if err := db.DB.Select("id, poster, thumb, backdrop, logo").
+                Where("tmdb_id <> ''").Find(&items).Error; err != nil {
+                return
+        }
+        for i := range items {
+                updates := map[string]any{}
+                for field, value := range map[string]string{
+                        "poster": items[i].Poster, "thumb": items[i].Thumb,
+                        "backdrop": items[i].Backdrop, "logo": items[i].Logo,
+                } {
+                        if next, changed := remapAssetPath(value, oldDir, newDir); changed {
+                                updates[field] = next
+                        }
+                }
+                if len(updates) > 0 {
+                        _ = db.DB.Model(&models.Item{}).Where("id = ?", items[i].ID).Updates(updates).Error
+                }
+        }
+}
+
+func remapAssetPath(path, oldDir, newDir string) (string, bool) {
+        if path == "" || !strings.HasPrefix(path, oldDir+string(filepath.Separator)) {
+                return path, false
+        }
+        return newDir + path[len(oldDir):], true
 }
 
 // writeTmdbMetadataFile 将 TMDB 元数据写入“提取媒体信息设置”的保存目录。
@@ -556,8 +687,42 @@ func (s *Scanner) scrapeMovie(ctx context.Context, item *models.Item, set tmdb.S
         if detail == nil {
                 title, year := item.Name, item.Year
                 matchYear := year
-                logx.TaskLog("scrape", "info", "TMDB 搜索电影：「%s」(%d)", title, year)
-                results, err := tmdb.SearchMovie(ctx, set.APIKey, title, set.Language, year)
+                results := []tmdb.SearchResult{}
+                var err error
+                aiTried := false
+                if preferAIEnabled() {
+                        aiTried = true
+                        if keywords, ok := s.aiRetrySearch(ctx, "Movie", item.Path, item.Name, item.Year, true); ok {
+                                logx.TaskLog("scrape", "info", "AI 优先关键词搜索电影：「%s」/「%s」(%d)", keywords.Title, keywords.OriginalTitle, keywords.Year)
+                                if keywords.Year > 0 {
+                                        matchYear = keywords.Year
+                                }
+                                searchFn := tmdb.SearchMovie
+                                if !aiTypeIsMovie(keywords) {
+                                        searchFn = tmdb.SearchTV
+                                        logx.TaskLog("scrape", "info", "AI 判定类型「%s」非电影，改用 TMDB TV 搜索", keywords.Type)
+                                }
+                                found, searchErr := searchWithAIKeywords(ctx, set.APIKey, set.Language, keywords, searchFn)
+                                if searchErr != nil {
+                                        logx.TaskLog("scrape", "warn", "AI 关键词 TMDB 搜索失败，回退原文件名搜索：%v", searchErr)
+                                }
+                                if searchErr == nil && !aiTypeIsMovie(keywords) {
+                                        if len(found) == 0 {
+                                                return fmt.Errorf("AI 判定为非电影，但 TMDB TV 未找到匹配: %s (%d)", keywords.Title, keywords.Year)
+                                        }
+                                        best := bestTVResult(found, matchYear)
+                                        logx.TaskLog("scrape", "info", "AI 命中 TV《%s》(首播 %s) TmdbID=%d", best.Name, best.FirstAirDate, best.ID)
+                                        return s.scrapeSeries(ctx, item, set, map[string]string{"Tmdb": fmt.Sprint(best.ID)})
+                                }
+                                if searchErr == nil {
+                                        results = found
+                                }
+                        }
+                }
+                if len(results) == 0 {
+                        matchYear = year
+                        logx.TaskLog("scrape", "info", "TMDB 搜索电影：「%s」(%d)", title, year)
+                        results, err = tmdb.SearchMovie(ctx, set.APIKey, title, set.Language, year)
                 if err != nil {
                         return err
                 }
@@ -568,9 +733,11 @@ func (s *Scanner) scrapeMovie(ctx context.Context, item *models.Item, set tmdb.S
                                 return err
                         }
                 }
+                }
                 if len(results) == 0 {
                         // AI 识别辅助：从文件路径提取关键词后重试搜索
-                        if keywords, ok := s.aiRetrySearch(ctx, "Movie", item.Path, item.Name, item.Year); ok {
+                        if !aiTried {
+                        if keywords, ok := s.aiRetrySearch(ctx, "Movie", item.Path, item.Name, item.Year, false); ok {
                                 logx.TaskLog("scrape", "info", "AI 关键词重搜电影：「%s」/「%s」(%d)", keywords.Title, keywords.OriginalTitle, keywords.Year)
                                 if keywords.Year > 0 {
                                         matchYear = keywords.Year
@@ -592,6 +759,7 @@ func (s *Scanner) scrapeMovie(ctx context.Context, item *models.Item, set tmdb.S
 					logx.TaskLog("scrape", "info", "AI 命中 TV《%s》(首播 %s) TmdbID=%d", best.Name, best.FirstAirDate, best.ID)
 					return s.scrapeSeries(ctx, item, set, map[string]string{"Tmdb": fmt.Sprint(best.ID)})
 				}
+                        }
                         }
                 }
                 logx.TaskLog("scrape", "info", "搜索结果：%d 条", len(results))
@@ -910,8 +1078,29 @@ func (s *Scanner) scrapeSeries(ctx context.Context, item *models.Item, set tmdb.
         if detail == nil {
                 title, year := item.Name, item.Year
                 matchYear := year
-                logx.TaskLog("scrape", "info", "TMDB 搜索剧集：「%s」(%d)", title, year)
-                results, err := tmdb.SearchTV(ctx, set.APIKey, title, set.Language, year)
+                results := []tmdb.SearchResult{}
+                var err error
+                aiTried := false
+                if preferAIEnabled() {
+                        aiTried = true
+                        if keywords, ok := s.aiRetrySearch(ctx, "Series", item.Path, item.Name, item.Year, true); ok {
+                                logx.TaskLog("scrape", "info", "AI 优先关键词搜索剧集：「%s」/「%s」(%d)", keywords.Title, keywords.OriginalTitle, keywords.Year)
+                                if keywords.Year > 0 {
+                                        matchYear = keywords.Year
+                                }
+                                found, searchErr := searchWithAIKeywords(ctx, set.APIKey, set.Language, keywords, tmdb.SearchTV)
+                                if searchErr != nil {
+                                        logx.TaskLog("scrape", "warn", "AI 关键词 TMDB 搜索失败，回退原文件名搜索：%v", searchErr)
+                                }
+                                if searchErr == nil {
+                                        results = found
+                                }
+                        }
+                }
+                if len(results) == 0 {
+                        matchYear = year
+                        logx.TaskLog("scrape", "info", "TMDB 搜索剧集：「%s」(%d)", title, year)
+                        results, err = tmdb.SearchTV(ctx, set.APIKey, title, set.Language, year)
                 if err != nil {
                         return err
                 }
@@ -922,9 +1111,11 @@ func (s *Scanner) scrapeSeries(ctx context.Context, item *models.Item, set tmdb.
                                 return err
                         }
                 }
+                }
                 if len(results) == 0 {
                         // AI 识别辅助：从文件路径提取关键词后重试搜索
-                        if keywords, ok := s.aiRetrySearch(ctx, "Series", item.Path, item.Name, item.Year); ok {
+                        if !aiTried {
+                        if keywords, ok := s.aiRetrySearch(ctx, "Series", item.Path, item.Name, item.Year, false); ok {
                                 logx.TaskLog("scrape", "info", "AI 关键词重搜剧集：「%s」/「%s」(%d)", keywords.Title, keywords.OriginalTitle, keywords.Year)
                                 if keywords.Year > 0 {
                                         matchYear = keywords.Year
@@ -933,6 +1124,7 @@ func (s *Scanner) scrapeSeries(ctx context.Context, item *models.Item, set tmdb.
                                 if err != nil {
                                         return err
                                 }
+                        }
                         }
                 }
                 logx.TaskLog("scrape", "info", "搜索结果：%d 条", len(results))

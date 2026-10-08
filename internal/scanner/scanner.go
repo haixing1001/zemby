@@ -59,6 +59,7 @@ func New(cfg *config.Config) *Scanner {
 			scrapeQueue: newScrapeTaskQueue(),
         }
         dataDirOnce.Do(func() { dataDirValue = cfg.DataDir })
+        migrateTmdbAssetFolders()
         s.StartWorkers()
         // 启动时恢复实时监控状态
         if LoadScrapeConfig().Realtime {

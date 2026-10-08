@@ -1,7 +1,7 @@
 <template>
   <div>
     <h1 class="adm-h1">AI 识别辅助</h1>
-    <div class="adm-desc">TMDB 识别失败时，自动调用 AI 从文件名 / 目录名提取关键词后重新刮削</div>
+    <div class="adm-desc">可先用 AI 从文件名 / 目录名提取关键词再搜索 TMDB，也可保持 TMDB 识别失败后再调用 AI 兜底</div>
 
     <div class="collapse-sec">
       <div class="body" style="padding:2px 16px 16px;">
@@ -12,6 +12,15 @@
             <div class="d">TMDB 使用原片名并尝试有年份、无年份搜索仍无结果时，才调用一次 AI；识别结果中的常用名和外文原名都会用于重搜，避免正常刮削增加 AI 调用。</div>
           </div>
           <label class="switch"><input type="checkbox" v-model="ai.Enabled" @change="save" /><span class="track"></span><span class="knob"></span></label>
+        </div>
+
+        <!-- 优先 AI 识别 -->
+        <div class="set-row">
+          <div>
+            <div class="t">优先 AI 识别</div>
+            <div class="d">开启后先由 AI 提取关键词并搜索 TMDB；AI 失败或无结果时，再回退到原文件名搜索。</div>
+          </div>
+          <label class="switch"><input type="checkbox" v-model="ai.PreferAI" @change="save" :disabled="!ai.Enabled" /><span class="track"></span><span class="knob"></span></label>
         </div>
 
         <!-- 当前使用供应商 -->
@@ -161,7 +170,7 @@ const PRESETS = {
   ollama: { label: 'Ollama', BaseURL: 'http://localhost:11434/v1', Model: 'llama3.1' }
 }
 
-const ai = ref({ Enabled: false, ActiveID: '', Providers: [] })
+const ai = ref({ Enabled: false, PreferAI: false, ActiveID: '', Providers: [] })
 const editing = ref(null)
 const preset = ref('')
 const saving = ref(false)
@@ -174,7 +183,7 @@ const testError = ref(false)
 onMounted(async () => {
   try {
     const fresh = await api.admin.ai()
-    ai.value = { Enabled: !!fresh.Enabled, ActiveID: fresh.ActiveID || '', Providers: fresh.Providers || [] }
+    ai.value = { Enabled: !!fresh.Enabled, PreferAI: !!fresh.PreferAI, ActiveID: fresh.ActiveID || '', Providers: fresh.Providers || [] }
   } catch {}
 })
 
@@ -248,6 +257,7 @@ async function save() {
   try {
     await api.admin.saveAI({
       Enabled: ai.value.Enabled,
+      PreferAI: !!ai.value.PreferAI && !!ai.value.Enabled,
       ActiveID: ai.value.ActiveID || '',
       Providers: ai.value.Providers.map(p => ({
         ID: p.ID,
@@ -260,12 +270,12 @@ async function save() {
     })
     toast('AI 识别辅助设置已保存')
     const fresh = await api.admin.ai()
-    ai.value = { Enabled: !!fresh.Enabled, ActiveID: fresh.ActiveID || '', Providers: fresh.Providers || [] }
+    ai.value = { Enabled: !!fresh.Enabled, PreferAI: !!fresh.PreferAI, ActiveID: fresh.ActiveID || '', Providers: fresh.Providers || [] }
   } catch (e) {
     toast(errText(e), true)
     try {
       const fresh = await api.admin.ai()
-      ai.value = { Enabled: !!fresh.Enabled, ActiveID: fresh.ActiveID || '', Providers: fresh.Providers || [] }
+      ai.value = { Enabled: !!fresh.Enabled, PreferAI: !!fresh.PreferAI, ActiveID: fresh.ActiveID || '', Providers: fresh.Providers || [] }
     } catch {}
   }
   saving.value = false

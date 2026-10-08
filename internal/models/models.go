@@ -293,29 +293,48 @@ func (i *Item) TmdbRouteID() string {
         default:
                 return i.ID
         }
-        return "tmdb-" + kind + "-" + tmdbID
+        return kind + "-" + tmdbID
 }
 
-// ParseTmdbRouteID 解析前台 TMDB 路由身份。
+// ParseTmdbRouteID 解析前台 TMDB 路由身份，并兼容上一版 tmdb-movie-* / tmdb-tv-* 链接。
 func ParseTmdbRouteID(routeID string) (kind string, tmdbID string, ok bool) {
         routeID = strings.ToLower(strings.TrimSpace(routeID))
+        if kind, tmdbID, ok = parseCurrentTmdbRouteID(routeID); ok {
+                return kind, tmdbID, true
+        }
+        return parseLegacyTmdbRouteID(routeID)
+}
+
+func parseCurrentTmdbRouteID(routeID string) (kind string, tmdbID string, ok bool) {
+        if !strings.HasPrefix(routeID, "movie-") && !strings.HasPrefix(routeID, "tv-") {
+                return "", "", false
+        }
+        parts := strings.SplitN(routeID, "-", 2)
+        return parts[0], parts[1], validTmdbRouteID(parts[0], parts[1])
+}
+
+func parseLegacyTmdbRouteID(routeID string) (kind string, tmdbID string, ok bool) {
         const prefix = "tmdb-"
         if !strings.HasPrefix(routeID, prefix) {
                 return "", "", false
         }
         parts := strings.Split(strings.TrimPrefix(routeID, prefix), "-")
-        if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+        if len(parts) != 2 {
                 return "", "", false
         }
-        if parts[0] != "movie" && parts[0] != "tv" {
-                return "", "", false
+        return parts[0], parts[1], validTmdbRouteID(parts[0], parts[1])
+}
+
+func validTmdbRouteID(kind, tmdbID string) bool {
+        if (kind != "movie" && kind != "tv") || tmdbID == "" {
+                return false
         }
-        for _, ch := range parts[1] {
+        for _, ch := range tmdbID {
                 if ch < '0' || ch > '9' {
-                        return "", "", false
+                        return false
                 }
         }
-        return parts[0], parts[1], true
+        return true
 }
 
 // BeforeSave GORM 钩子：任何保存都同步刷新首字母检索串。

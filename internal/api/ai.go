@@ -32,7 +32,7 @@ func (a *App) adminAI(w http.ResponseWriter, r *http.Request) {
 				"Model": p.Model, "MaxTokens": p.MaxTokens,
 			})
 		}
-		a.json(w, 200, M{"Enabled": cfg.Enabled, "ActiveID": cfg.ActiveID, "Providers": provs})
+		a.json(w, 200, M{"Enabled": cfg.Enabled, "PreferAI": cfg.PreferAI, "ActiveID": cfg.ActiveID, "Providers": provs})
 		return
 	}
 	if r.Method != http.MethodPut && r.Method != http.MethodPost {
@@ -41,6 +41,7 @@ func (a *App) adminAI(w http.ResponseWriter, r *http.Request) {
 	}
 	var b struct {
 		Enabled  *bool   `json:"Enabled"`
+		PreferAI *bool   `json:"PreferAI"`
 		ActiveID *string `json:"ActiveID"`
 		Providers *[]struct {
 			ID        string `json:"ID"`
@@ -176,6 +177,9 @@ func (a *App) adminAI(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ActiveID 失效时回退第一个
+	if b.PreferAI != nil {
+		cfg.PreferAI = *b.PreferAI
+	}
 	activeOK := false
 	for _, p := range cfg.Providers {
 		if p.ID == cfg.ActiveID {
@@ -202,7 +206,7 @@ func (a *App) adminAI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	prov, _ := cfg.ActiveProvider()
-	logx.InfoC(logx.CatAI, "AI 识别辅助配置已更新（启用=%v 供应商=%d 个 当前「%s」）", cfg.Enabled, len(cfg.Providers), prov.Name)
+	logx.InfoC(logx.CatAI, "AI 识别辅助配置已更新（启用=%v 优先AI=%v 供应商=%d 个 当前「%s」）", cfg.Enabled, cfg.PreferAI, len(cfg.Providers), prov.Name)
 	a.json(w, 200, M{"OK": true})
 }
 

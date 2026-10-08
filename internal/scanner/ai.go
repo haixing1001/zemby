@@ -33,6 +33,7 @@ type AIProvider struct {
 // Legacy* 字段仅为兼容旧版单供应商数据，读取后即迁移，保存时不写出。
 type AIConfig struct {
 	Enabled   bool         `json:"enabled"`
+	PreferAI  bool         `json:"preferAi"`
 	ActiveID  string       `json:"activeId,omitempty"`
 	Providers []AIProvider `json:"providers,omitempty"`
 
@@ -51,7 +52,7 @@ const (
 
 // DefaultAIConfig 默认配置。
 func DefaultAIConfig() AIConfig {
-	return AIConfig{Enabled: false}
+	return AIConfig{Enabled: false, PreferAI: false}
 }
 
 // NewAIProviderID 生成新的供应商 ID。
@@ -104,6 +105,12 @@ func (c AIConfig) ActiveProvider() (AIProvider, bool) {
 		return c.Providers[0], true
 	}
 	return AIProvider{}, false
+}
+
+// preferAIEnabled 判断是否在 TMDB 原名搜索前优先调用 AI 提取关键词。
+func preferAIEnabled() bool {
+	cfg := LoadAIConfig()
+	return cfg.Enabled && cfg.PreferAI
 }
 
 // LoadAIConfig 读取 AI 配置；旧版单供应商字段自动迁移为供应商列表。
@@ -464,9 +471,9 @@ func parseAIYear(raw json.RawMessage) int {
 	return year
 }
 
-// aiRetrySearch TMDB 搜索 0 结果时的 AI 辅助重试。
+// aiRetrySearch 调用 AI 提取关键词；prefer 为 true 表示在 TMDB 原名搜索前优先执行。
 // 返回 AI 关键词；未启用/失败返回 false（调用方沿用原错误）。
-func (s *Scanner) aiRetrySearch(ctx context.Context, itemType string, path, name string, year int) (*AIKeywords, bool) {
+func (s *Scanner) aiRetrySearch(ctx context.Context, itemType string, path, name string, year int, prefer bool) (*AIKeywords, bool) {
 	cfg := LoadAIConfig()
 	if !cfg.Enabled {
 		return nil, false
@@ -475,8 +482,12 @@ func (s *Scanner) aiRetrySearch(ctx context.Context, itemType string, path, name
 	if !ok {
 		return nil, false
 	}
-	logx.InfoC(logx.CatAI, "TMDB 识别失败，调用 AI 辅助提取关键词：《%s》· 供应商「%s」", name, prov.Name)
-	logx.TaskLog("scrape", "info", "TMDB 识别失败，调用 AI 辅助提取关键词：《%s》· 文件线索 %s", name, recentPathParts(path, 3))
+	reason := "TMDB 识别失败，调用 AI 辅助提取关键词"
+	if prefer {
+		reason = "优先调用 AI 提取关键词"
+	}
+	logx.InfoC(logx.CatAI, "%s：《%s》· 供应商「%s」", reason, name, prov.Name)
+	logx.TaskLog("scrape", "info", "%s：《%s》· 文件线索 %s", reason, name, recentPathParts(path, 3))
 	k, err := AIExtractKeywords(ctx, prov, itemType, path, name, year)
 	if err != nil {
 		logx.WarnC(logx.CatAI, "AI 关键词提取失败: %v", err)
