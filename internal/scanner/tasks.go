@@ -630,9 +630,11 @@ func (s *Scanner) scrapeMovie(ctx context.Context, item *models.Item, set tmdb.S
                 results := []tmdb.SearchResult{}
                 var err error
                 aiTried := false
+                var aiKeywords *AIKeywords
                 if preferAIEnabled() {
                         aiTried = true
                         if keywords, ok := s.aiRetrySearch(ctx, "Movie", item.Path, item.Name, item.Year, true); ok {
+                                aiKeywords = keywords
                                 logx.TaskLog("scrape", "info", "AI 优先关键词搜索电影：「%s」/「%s」(%d)", keywords.Title, keywords.OriginalTitle, keywords.Year)
                                 if keywords.Year > 0 {
                                         matchYear = keywords.Year
@@ -656,6 +658,22 @@ func (s *Scanner) scrapeMovie(ctx context.Context, item *models.Item, set tmdb.S
                                 }
                                 if searchErr == nil {
                                         results = found
+                                }
+                        }
+                }
+                if len(results) == 0 && aiKeywords != nil && aiTypeIsMovie(aiKeywords) {
+                        // AI 关键词各查询均无结果（TMDB 未返回或标题相似度都不足）：
+                        // 用 AI 提取的干净标题直接搜索，由 bestMovieResult 按年份/海报/评分择优。
+                        // 原文件名可能被榜单编号、字幕组等前缀污染（如 Top212.xxx），直接搜必败。
+                        logx.TaskLog("scrape", "info", "AI 关键词兜底搜索电影：「%s」(%d)", aiKeywords.Title, aiKeywords.Year)
+                        results, err = tmdb.SearchMovie(ctx, set.APIKey, aiKeywords.Title, set.Language, aiKeywords.Year)
+                        if err != nil {
+                                return err
+                        }
+                        if len(results) == 0 && aiKeywords.Year > 0 {
+                                results, err = tmdb.SearchMovie(ctx, set.APIKey, aiKeywords.Title, set.Language, 0)
+                                if err != nil {
+                                        return err
                                 }
                         }
                 }
@@ -769,6 +787,7 @@ func searchWithAIKeywords(ctx context.Context, key, lang string, keywords *AIKey
 	if keywords == nil {
 		return nil, nil
 	}
+	var fallback []tmdb.SearchResult // 严格过滤无命中时按标题相似度保留的兜底结果
 	for _, query := range aiSearchQueries(keywords) {
 		logx.TaskLog("scrape", "info", "AI 关键词调用 TMDB：「%s」(年份 %d)", query, keywords.Year)
 		found, err := search(ctx, key, query, lang, keywords.Year)
@@ -782,15 +801,84 @@ func searchWithAIKeywords(ctx context.Context, key, lang string, keywords *AIKey
 			}
 		}
 		if matched := filterAIKeywordResults(found, keywords); len(matched) > 0 {
+			logx.TaskLog("scrape", "info", "AI 关键词「%s」返回 %d 条，严格过滤后命中 %d 条", query, len(found), len(matched))
 			return matched, nil
 		}
+		// 严格过滤（年份精确相等 + 标题相似度）无命中时不能直接丢弃：
+		// TMDB 镜像可能返回缺失 release_date 的结果、或地区发行年份与文件名
+		// 相差一年，全杀光后会回退到被“Top212”之类污染的原文件名搜索，必败。
+		// 按标题相似度兜底保留，交由后续 bestMovieResult/bestTVResult 择优。
+		if len(fallback) == 0 {
+			if relaxed := bestEffortAIResults(found, keywords); len(relaxed) > 0 {
+				logx.TaskLog("scrape", "info", "AI 关键词「%s」返回 %d 条，严格过滤无命中；按标题相似度保留 %d 条兜底", query, len(found), len(relaxed))
+				fallback = relaxed
+			} else if len(found) > 0 {
+				logx.TaskLog("scrape", "warn", "AI 关键词「%s」返回 %d 条，但标题相似度均不足，全部丢弃", query, len(found))
+			}
+		}
 	}
-	return nil, nil
+	return fallback, nil
 }
 
 type aiScoredResult struct {
 	result tmdb.SearchResult
 	score  float64
+}
+
+// bestEffortAIResults 严格过滤（年份+标题）无命中时的兜底：仅按标题相似度
+// （阈值与严格模式一致）保留结果，不因发行日期缺失或年份偏差丢弃；排序优先
+// 有发行日期且与期望年份最接近的条目，降低同名翻拍误配的概率。
+func bestEffortAIResults(results []tmdb.SearchResult, keywords *AIKeywords) []tmdb.SearchResult {
+	if keywords == nil || len(results) == 0 {
+		return nil
+	}
+	type entry struct {
+		result  tmdb.SearchResult
+		score   float64
+		hasDate bool
+		yearGap int
+	}
+	entries := make([]entry, 0, len(results))
+	for _, result := range results {
+		score := aiResultTitleScore(result, keywords)
+		if score < 60 {
+			continue
+		}
+		hasDate, yearGap := false, 1<<30
+		if result.ReleaseDate != "" {
+			hasDate, yearGap = true, absInt(parseYear(result.ReleaseDate)-keywords.Year)
+		} else if result.FirstAirDate != "" {
+			hasDate, yearGap = true, absInt(parseYear(result.FirstAirDate)-keywords.Year)
+		}
+		if keywords.Year <= 0 {
+			yearGap = 0 // 无期望年份时不按日期排序
+		}
+		entries = append(entries, entry{result, score, hasDate, yearGap})
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].score != entries[j].score {
+			return entries[i].score > entries[j].score
+		}
+		if entries[i].hasDate != entries[j].hasDate {
+			return entries[i].hasDate
+		}
+		return entries[i].yearGap < entries[j].yearGap
+	})
+	out := make([]tmdb.SearchResult, 0, len(entries))
+	for i := range entries {
+		out = append(out, entries[i].result)
+	}
+	return out
+}
+
+func absInt(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
 }
 
 // filterAIKeywordResults 只保留年份和标题都与 AI 关键词相关的结果。TMDB 搜索可能
@@ -1143,9 +1231,11 @@ func (s *Scanner) scrapeSeries(ctx context.Context, item *models.Item, set tmdb.
                 results := []tmdb.SearchResult{}
                 var err error
                 aiTried := false
+                var aiKeywords *AIKeywords
                 if preferAIEnabled() {
                         aiTried = true
                         if keywords, ok := s.aiRetrySearch(ctx, "Series", item.Path, item.Name, item.Year, true); ok {
+                                aiKeywords = keywords
                                 logx.TaskLog("scrape", "info", "AI 优先关键词搜索剧集：「%s」/「%s」(%d)", keywords.Title, keywords.OriginalTitle, keywords.Year)
                                 if keywords.Year > 0 {
                                         matchYear = keywords.Year
@@ -1156,6 +1246,21 @@ func (s *Scanner) scrapeSeries(ctx context.Context, item *models.Item, set tmdb.
                                 }
                                 if searchErr == nil {
                                         results = found
+                                }
+                        }
+                }
+                if len(results) == 0 && aiKeywords != nil {
+                        // AI 关键词各查询均无结果：用 AI 提取的干净标题直接搜索，
+                        // 原文件名可能被榜单编号等前缀污染，直接搜必败。
+                        logx.TaskLog("scrape", "info", "AI 关键词兜底搜索剧集：「%s」(%d)", aiKeywords.Title, aiKeywords.Year)
+                        results, err = tmdb.SearchTV(ctx, set.APIKey, aiKeywords.Title, set.Language, aiKeywords.Year)
+                        if err != nil {
+                                return err
+                        }
+                        if len(results) == 0 && aiKeywords.Year > 0 {
+                                results, err = tmdb.SearchTV(ctx, set.APIKey, aiKeywords.Title, set.Language, 0)
+                                if err != nil {
+                                        return err
                                 }
                         }
                 }
