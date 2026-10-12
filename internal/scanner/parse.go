@@ -38,6 +38,7 @@ var (
 	epPattern    = regexp.MustCompile(`(?i)[Ss](\d{1,3})[\s._-]*[EeXx](\d{1,4})`)
 	epPatternAlt = regexp.MustCompile(`(?i)第\s*(\d{1,4})\s*季\s*第\s*(\d{1,4})\s*[集話话]`)
 	epPlain      = regexp.MustCompile(`(?i)^(?:[^\d]|^)(\d{1,4})\s*[集話话]`)
+	epCn         = regexp.MustCompile(`(?i)第\s*(\d{1,4})\s*[集話话]`)
 	yearPattern  = regexp.MustCompile(`(?i)[\(\[.]?\b((?:19|20)\d{2})\b[\)\].]?`)
 	seasonDir    = regexp.MustCompile(`(?i)^season[ ._\-]*(\d{1,3})$`)
 	cnSeasonDir  = regexp.MustCompile(`(?i)第\s*(\d{1,3})\s*季`)
@@ -66,9 +67,9 @@ func ParseName(base string) Parsed {
 	// 剔除扩展名残影
 	name = strings.TrimSuffix(name, filepath.Ext(name))
 
-	// 采样/预告
-	low := strings.ToLower(name)
-	if strings.Contains(low, "sample") || strings.HasPrefix(low, "trailer") {
+	// 采样/预告：sample/trailer 作为独立分词出现，且不是多词标题的首词
+	//（否则《Trailer Park Boys》这类正常片名会被误杀）。
+	if looksLikeSample(name) {
 		p.IsSample = true
 	}
 
@@ -80,6 +81,10 @@ func ParseName(base string) Parsed {
 		p.Season, _ = strconv.Atoi(m[1])
 		p.Episode, _ = strconv.Atoi(m[2])
 	} else if m := epPlain.FindStringSubmatch(name); m != nil {
+		p.Season = 1
+		p.Episode, _ = strconv.Atoi(m[1])
+	} else if m := epCn.FindStringSubmatch(name); m != nil {
+		// 「剧名 第N集」无季中文命名：季默认 1，集号取 N
 		p.Season = 1
 		p.Episode, _ = strconv.Atoi(m[1])
 	}
@@ -100,11 +105,13 @@ func ParseName(base string) Parsed {
 	}
 	p.Year = year
 
-	// 分集名处理：SxxExx 之前的部分是标题
+	// 分集名处理：SxxExx / 第N季第N集 / 第N集 之前的部分是标题
 	if p.Episode > 0 {
 		if m := epPattern.FindStringIndex(strings.ToUpper(base)); m != nil && m[0] > 0 {
 			name = strings.TrimSpace(base[:m[0]])
 		} else if m := epPatternAlt.FindStringIndex(base); m != nil && m[0] > 0 {
+			name = strings.TrimSpace(base[:m[0]])
+		} else if m := epCn.FindStringIndex(base); m != nil && m[0] > 0 {
 			name = strings.TrimSpace(base[:m[0]])
 		}
 	}
@@ -134,6 +141,29 @@ func ParseName(base string) Parsed {
 	}
 	p.Title = name
 	return p
+}
+
+// looksLikeSample 判断是否为样本/预告文件：sample/trailer 须为独立分词，
+// 且不作为多词标题的首词（《Trailer Park Boys》是正常片名，不应被当作预告）。
+func looksLikeSample(name string) bool {
+	low := strings.ToLower(name)
+	fields := strings.FieldsFunc(low, func(r rune) bool {
+		switch r {
+		case ' ', '.', '_', '-', '[', ']', '(', ')', '+', '&':
+			return true
+		}
+		return false
+	})
+	for i, f := range fields {
+		if f != "sample" && f != "trailer" {
+			continue
+		}
+		if i == 0 && len(fields) > 1 {
+			continue // 首词是多词标题的一部分
+		}
+		return true
+	}
+	return false
 }
 
 // ParseSeasonDir 解析季目录名，返回季号（0 表示非季目录）。

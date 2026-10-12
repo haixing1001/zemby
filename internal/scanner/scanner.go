@@ -283,11 +283,22 @@ func listVideos(root string) ([]videoFile, error) {
 func (s *Scanner) scanMoviesDir(lib *models.Library, root string, full bool, seen seenPaths, existing map[string]models.Item, cnt *struct{ files, newItems, updated, skipped int }) error {
 	files, walkErr := listVideos(root)
 	for _, vf := range files {
-                if s.stopped(lib.ID) {
+		if s.stopped(lib.ID) {
 			return walkErr
-                }
-                seen[vf.path] = vf.mtime
-                cnt.files++
+		}
+		// 剧集/样本防混入：电影库只收录电影文件。命中集号模式（SxxExx、
+		// 第N季第N集、第N集）或样本/预告分词的文件跳过入库，历史上误建的
+		// 条目一并清理——否则同一部剧的每集都会变成同名“电影”，刮削错配、
+		// TMDB 去重还会把它们错误归并。
+		if p := ParseName(filepath.Base(vf.path)); p.IsSample || p.Episode > 0 {
+			seen[vf.path] = vf.mtime
+			cnt.files++
+			cnt.skipped++
+			s.removeMisclassified(lib, vf.path, p)
+			continue
+		}
+		seen[vf.path] = vf.mtime
+		cnt.files++
                 // 增量：未变化跳过重建，但仍刷新字幕与本地图片（轻量）
                 if !full {
                         ex, ok := existing[vf.path]
@@ -334,6 +345,22 @@ func (s *Scanner) scanTVDir(lib *models.Library, root string, full bool, seen se
                 s.upsertSeries(lib, sd, groups[sd], full, seen, existing, cnt)
         }
 	return walkErr
+}
+
+// removeMisclassified 电影库中检测为剧集或样本/预告的文件：记录告警，
+// 并清理历史上误建的电影条目（含级联的源、流、播放状态）。
+func (s *Scanner) removeMisclassified(lib *models.Library, path string, p Parsed) {
+	reason := "样本/预告文件"
+	if !p.IsSample {
+		reason = fmt.Sprintf("剧集文件（第 %d 季第 %d 集）", p.Season, p.Episode)
+	}
+	if it, err := findItem(lib.ID, path); err == nil && it != nil && it.Type == "Movie" {
+		s.deleteItemCascade(it.ID)
+		s.tlog(lib.ID, "warn", "电影库跳过%s，已清理误建条目「%s」：%s", reason, it.Name, path)
+		logx.WarnC(logx.CatScan, "电影库跳过%s并清理误建条目：%s", reason, path)
+		return
+	}
+	s.tlog(lib.ID, "warn", "电影库跳过%s（不属于电影内容）：%s", reason, path)
 }
 
 // upsertMovie 建立或更新电影条目。
