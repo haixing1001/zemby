@@ -54,12 +54,14 @@ func TestSearchWithAIKeywordsStrictMatchStillWins(t *testing.T) {
 				ReleaseDate: "2019-12-05", PosterPath: "/b.jpg", VoteAverage: 7.0}, // 2019 翻拍
 		}, nil
 	}
+	// 严格过滤分级后可保留多个命中（如原版 L2 与同名翻拍 L3），
+	// 韩版（中文名+年份，L2）应排首位，翻拍（中英双名无年份，L3）随后。
 	got, err := searchWithAIKeywords(context.Background(), "k", "zh-CN", testKeywords, search)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].ID != 268467 {
-		t.Fatalf("严格过滤应只保留 2013 韩版(ID=268467), 实际: %+v", got)
+	if len(got) == 0 || got[0].ID != 268467 {
+		t.Fatalf("严格过滤后韩版应排首位, 实际: %+v", got)
 	}
 }
 
@@ -213,6 +215,110 @@ func TestAIRresultTitleScoreFieldAligned(t *testing.T) {
 	}
 }
 
+// TestTmdbMatchLevel 命中规则分级：
+// 中文名+英文名+年份 > 中文名+年份 > 中文名+英文名 > 中文名 > 英文名+年份 > 英文名。
+func TestTmdbMatchLevel(t *testing.T) {
+	cn, en := classifyRefs("告白 Confessions", "Twenty Two")
+	if len(cn) != 1 || cn[0] != "告白" || len(en) != 2 {
+		t.Fatalf("混合参考名拆分错误: cn=%v en=%v", cn, en)
+	}
+	// 中文名+英文名+年份全命中
+	full := tmdb.SearchResult{Title: "告白", OriginalTitle: "Twenty Two", ReleaseDate: "2010-06-05"}
+	if lv := tmdbMatchLevel(full, cn, en, 2010); lv != matchCNENYear {
+		t.Fatalf("全命中应为 L1, 实际 %d", lv)
+	}
+	// 中文名+年份（原名是外文非英文）
+	cnYear := tmdb.SearchResult{Title: "告白", OriginalTitle: "告白", ReleaseDate: "2010-06-05"}
+	if lv := tmdbMatchLevel(cnYear, cn, en, 2010); lv != matchCNYear {
+		t.Fatalf("中文+年份应为 L2, 实际 %d", lv)
+	}
+	// 同名英语翻拍：中英双名匹配但年份不符 → 不得压过年份正确的原版（L3）
+	remake := tmdb.SearchResult{Title: "告白", OriginalTitle: "Twenty Two", ReleaseDate: "2020-01-01"}
+	if lv := tmdbMatchLevel(remake, cn, en, 2010); lv != matchCNEN {
+		t.Fatalf("双名无年份应为 L3, 实际 %d", lv)
+	}
+	if tmdbMatchLevel(remake, cn, en, 2010) <= tmdbMatchLevel(cnYear, cn, en, 2010) {
+		t.Fatal("年份正确的原版(L2)应优先于双名无年份的翻拍(L3)")
+	}
+	// 仅中文名
+	cnOnly := tmdb.SearchResult{Title: "告白", OriginalTitle: "別的作品", ReleaseDate: ""}
+	if lv := tmdbMatchLevel(cnOnly, cn, en, 2010); lv != matchCNOnly {
+		t.Fatalf("仅中文应为 L4, 实际 %d", lv)
+	}
+	// 英文名+年份 / 仅英文名
+	enYear := tmdb.SearchResult{Title: "某某别的", OriginalTitle: "Twenty Two", ReleaseDate: "2010-06-05"}
+	if lv := tmdbMatchLevel(enYear, cn, en, 2010); lv != matchENYear {
+		t.Fatalf("英文+年份应为 L5, 实际 %d", lv)
+	}
+	enOnly := tmdb.SearchResult{Title: "某某别的", OriginalTitle: "Twenty Two", ReleaseDate: "1999-01-01"}
+	if lv := tmdbMatchLevel(enOnly, cn, en, 2010); lv != matchENOnly {
+		t.Fatalf("仅英文应为 L6, 实际 %d", lv)
+	}
+	// 无任何匹配
+	none := tmdb.SearchResult{Title: "别的电影", OriginalTitle: "Unrelated", ReleaseDate: "2010-01-01"}
+	if lv := tmdbMatchLevel(none, cn, en, 2010); lv != matchNone {
+		t.Fatalf("无匹配应为 0, 实际 %d", lv)
+	}
+}
+
+// TestYearMatchesTolerance 年份匹配允许 ±1 年误差（地区发行/首映跨年）。
+func TestYearMatchesTolerance(t *testing.T) {
+	if !yearMatches(1989, 1990) || !yearMatches(1990, 1990) || !yearMatches(1991, 1990) {
+		t.Fatal("1989/1990/1991 都应视为 1990 的年份匹配")
+	}
+	if yearMatches(1988, 1990) || yearMatches(1992, 1990) {
+		t.Fatal("误差超过 ±1 年不应匹配")
+	}
+	if yearMatches(1990, 0) {
+		t.Fatal("无期望年份时不应匹配")
+	}
+	// 命中等级：中文名+1989 条目对搜索 1990 应算 L2（中文名+年份）
+	cn, en := classifyRefs("无间道 Infernal Affairs")
+	early := tmdb.SearchResult{Title: "无间道", OriginalTitle: "無間道", ReleaseDate: "1989-12-30"}
+	if lv := tmdbMatchLevel(early, cn, en, 1990); lv != matchCNYear {
+		t.Fatalf("±1 年内应为 L2(中文名+年份), 实际 %d", lv)
+	}
+}
+
+// TestBestMovieResultMatchLevels 择优按命中等级：正确条目（中文名+年份）
+// 应胜过排在前面的无关高评分条目。
+func TestBestMovieResultMatchLevels(t *testing.T) {
+	results := []tmdb.SearchResult{
+		{ID: 900, Title: "LEGO DC Super Hero Girls: Galactic Wonder", OriginalTitle: "LEGO DC Super Hero Girls: Galactic Wonder", ReleaseDate: "2017-01-01", PosterPath: "/x.jpg", VoteAverage: 9.9},
+		{ID: 420803, Title: "奇迹男孩", OriginalTitle: "Wonder", ReleaseDate: "2017-11-17", PosterPath: "/w.jpg", VoteAverage: 8.0},
+	}
+	best := bestMovieResult(results, 2017, "奇迹男孩 Wonder")
+	if best.ID != 420803 {
+		t.Fatalf("命中规则应选出《奇迹男孩》, 实际 ID=%d (%s)", best.ID, best.Title)
+	}
+}
+
+// TestParseManualTmdbRef 手动 TMDB ID 指定的解析规则。
+func TestParseManualTmdbRef(t *testing.T) {
+	cases := []struct {
+		in   string
+		id   int
+		kind string
+		ok   bool
+	}{
+		{"tmdb:671", 671, "", true},
+		{"TMDB:671", 671, "", true},
+		{" tmdb-id:12345 ", 12345, "", true},
+		{"movie:671", 671, "movie", true},
+		{"tv:456", 456, "tv", true},
+		{"1917", 0, "", false},             // 纯数字不识别，防《1917》片名误判
+		{"tmdb:abc", 0, "", false},         // 非数字
+		{"tmdb:0", 0, "", false},           // 非正数
+		{"tmdb:123456789012", 0, "", false}, // 超长
+	}
+	for _, c := range cases {
+		id, kind, ok := parseManualTmdbRef(c.in)
+		if ok != c.ok || (c.ok && (id != c.id || kind != c.kind)) {
+			t.Errorf("parseManualTmdbRef(%q) = (%d,%q,%v), 期望 (%d,%q,%v)", c.in, id, kind, ok, c.id, c.kind, c.ok)
+		}
+	}
+}
+
 func TestAISearchQueriesChineseFirst(t *testing.T) {
 	q := aiSearchQueries(testKeywords)
 	want := []string{"7号房的礼物", "Miracle in Cell No 7", "7号房的礼物 (Miracle in Cell No 7)"}
@@ -227,18 +333,18 @@ func TestAISearchQueriesChineseFirst(t *testing.T) {
 }
 
 // TestSearchWithAIKeywordsStrictWinsOverFallback 多查询时严格命中优先：
-// 第一个查询（中文）只返回无日期结果（进兜底），第二个查询（外文原名）返回
+// 第一个查询（中文）只返回低相似结果（进兜底），第二个查询（外文原名）返回
 // 可严格命中的结果，最终应采用严格命中的。
 func TestSearchWithAIKeywordsStrictWinsOverFallback(t *testing.T) {
 	search := func(ctx context.Context, key, query, lang string, year int) ([]tmdb.SearchResult, error) {
 		if strings.Contains(query, "7号房的礼物") && !strings.Contains(query, "Miracle") { // 第一个查询（中文）
 			return []tmdb.SearchResult{
-				{ID: 100, Title: "7号房的礼物", OriginalTitle: "7번방의 선물", ReleaseDate: ""},
+				{ID: 100, Title: "某个无关的其它电影", OriginalTitle: "Something Else", ReleaseDate: "2010-01-01"},
 			}, nil
 		}
 		if strings.Contains(query, "Miracle") { // 后续查询
 			return []tmdb.SearchResult{
-				{ID: 268467, Title: "7号房的礼物", OriginalTitle: "7번방의 선物",
+				{ID: 268467, Title: "7号房的礼物", OriginalTitle: "7번방의 선물",
 					ReleaseDate: "2013-01-23", PosterPath: "/a.jpg", VoteAverage: 8.2},
 			}, nil
 		}

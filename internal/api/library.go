@@ -97,6 +97,12 @@ func (a *App) adminRoute(w http.ResponseWriter, r *http.Request, p string, parts
                         a.adminScrapeIncompleteRetry(w, r)
                 case p == "/admin/scrape/retry":
                         a.adminScrapeRetry(w, r)
+                case p == "/admin/scrape/clear-metadata":
+                        a.adminScrapeClearMetadata(w, r)
+                case p == "/admin/scrape/failed/clear-metadata":
+                        a.adminScrapeFailedClearMetadata(w, r)
+                case p == "/admin/scrape/incomplete/clear-metadata":
+                        a.adminScrapeIncompleteClearMetadata(w, r)
                 case p == "/admin/probe/config":
                         a.adminProbeConfig(w, r)
                 case p == "/admin/probe/status":

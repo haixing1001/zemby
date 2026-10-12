@@ -48,6 +48,8 @@ var (
 	edgedTrash   = regexp.MustCompile(`(?i)\b(extended|uncut|remastered|unrated|directors?[ ._-]?cut|theatrical|final[ ._-]?cut|imax|edition|repack|proper|internal|limited|complete|collector)\b`)
 	titleTrash   = regexp.MustCompile(`[._\-\[\]\(\)]+`)
 	chineseReg   = regexp.MustCompile(`[\p{Han}]+`)
+	hanSegRe     = regexp.MustCompile(`[\p{Han}0-9]+`)
+	latinSegRe   = regexp.MustCompile(`[A-Za-z][A-Za-z0-9'’!&\-.]*`)
 )
 
 // Parsed 文件名解析结果。
@@ -208,4 +210,29 @@ func FindSeriesDir(path, libRoot string) string {
 		// 当前是季目录，继续向上
 		dir = parent
 	}
+}
+
+// hasHan 是否含汉字。
+func hasHan(s string) bool { return chineseReg.MatchString(s) }
+
+// movieTitleFromPath 电影标题提取：发布组织的常见命名是目录带中文片名
+// （如「告白.Confessions.2010.BluRay」），而 .strm/视频文件名可能只是纯英文
+// 短词（Confessions/Up/Room/Wonder）——拿这类词去 TMDB 搜索极易误配到名字
+// 含该词的其它作品。父目录名解析出的标题含中文而文件名解析不含时，优先用
+// 目录名（文件名解析的年份作补充）。
+func movieTitleFromPath(path string) Parsed {
+	fileP := ParseName(filepath.Base(path))
+	dirP := ParseName(filepath.Base(filepath.Dir(path)))
+	if dirP.Title != "" && hasHan(dirP.Title) && !hasHan(fileP.Title) {
+		p := dirP
+		if p.Year == 0 {
+			p.Year = fileP.Year
+		}
+		if p.Season == 0 && p.Episode == 0 {
+			p.Season, p.Episode = fileP.Season, fileP.Episode
+		}
+		p.IsSample = p.IsSample || fileP.IsSample
+		return p
+	}
+	return fileP
 }

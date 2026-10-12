@@ -280,17 +280,9 @@ func incompleteMissingFields(item *models.Item) []string {
 // EnqueueIncompleteRescrape 把诊断判定为信息不全的电影/剧集全部加入重新刮削队列。
 // 与 RetryFailedScrape 相同：入队前清除历史失败标记，避免失败清单残留旧记录。
 func (s *Scanner) EnqueueIncompleteRescrape() (int, error) {
-	var items []models.Item
-	if err := db.DB.Select("id, name, type, poster, backdrop, people, overview, scrape_error").
-		Where("type IN ? AND duplicate_of = ''", []string{"Movie", "Series"}).
-		Order("updated_at DESC").Find(&items).Error; err != nil {
+	ids, err := incompleteItemIDs()
+	if err != nil {
 		return 0, err
-	}
-	ids := make([]string, 0, len(items))
-	for i := range items {
-		if len(incompleteMissingFields(&items[i])) > 0 {
-			ids = append(ids, items[i].ID)
-		}
 	}
 	if len(ids) == 0 {
 		return 0, nil
@@ -306,6 +298,24 @@ func (s *Scanner) EnqueueIncompleteRescrape() (int, error) {
 		SetScrapeState("running")
 	}
 	return n, nil
+}
+
+// incompleteItemIDs 信息不全条目 ID 列表（IncompleteItems 与一键清除元数据
+// 共用同一判定标准）。
+func incompleteItemIDs() ([]string, error) {
+	var items []models.Item
+	if err := db.DB.Select("id, name, type, poster, backdrop, people, overview, scrape_error").
+		Where("type IN ? AND duplicate_of = ''", []string{"Movie", "Series"}).
+		Order("updated_at DESC").Find(&items).Error; err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(items))
+	for i := range items {
+		if len(incompleteMissingFields(&items[i])) > 0 {
+			ids = append(ids, items[i].ID)
+		}
+	}
+	return ids, nil
 }
 
 func hasActorMetadata(raw string) bool {

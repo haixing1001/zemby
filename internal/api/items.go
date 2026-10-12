@@ -901,7 +901,7 @@ func (a *App) searchHints(w http.ResponseWriter, r *http.Request) {
 func (a *App) itemRefresh(w http.ResponseWriter, r *http.Request, id string) {
         a.adminGuard(w, r, func() {
                 go func() {
-                        _ = a.scanner.ScrapeNow(strings.ToLower(id))
+                        _ = a.scanner.ScrapeNow(strings.ToLower(id), true)
                         logxScan("条目刷新完成: %s", id)
                 }()
                 a.noContent(w)

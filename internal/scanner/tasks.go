@@ -295,7 +295,7 @@ func (s *Scanner) scrapeWorker() {
 				return // 增强功能「启动TMDB」关闭：静默跳过（开启后可重新批量刮削）
                 }
                 ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-		err := s.scrapeItemWithKeyword(ctx, t.itemID, t.query, t.year)
+		err := s.scrapeItemWithKeyword(ctx, t.itemID, t.query, t.year, t.manual && t.query == "")
 		cancel()
 		if err != nil {
 		        // 清除失败刮削写入的 TMDB 身份（含 ProviderIDs 中的 Tmdb 键）：
@@ -342,16 +342,133 @@ func clearFailedTmdbIdentity(itemID string) {
         db.DB.Model(&models.Item{}).Where("id = ?", itemID).Updates(updates)
 }
 
+// ClearItemMetadata 清除条目的刮削元数据，恢复未刮削状态：回退名称/年份为
+// 文件路径解析的原始标题（含中文目录名优先），清空 TMDB 身份与线上元数据、
+// 图片路径。媒体信息（ffprobe 提取的轨道/时长）与用户播放状态保留；
+// 本地 NFO 与本地图片在下一次扫描时自动重新应用，之后可重新刮削。
+// 用于错配条目的一键纠错（如《告白》被误刮成 The Confessions）。
+func (s *Scanner) ClearItemMetadata(itemID string) error {
+	var it models.Item
+	if err := db.DB.First(&it, "id = ?", itemID).Error; err != nil {
+		return err
+	}
+	if it.Type != "Movie" && it.Type != "Series" {
+		return fmt.Errorf("仅支持电影和剧集条目")
+	}
+	if it.DuplicateOf != "" {
+		return fmt.Errorf("重复条目由正主管辖，请清除正主条目")
+	}
+	updates := map[string]any{
+		"tmdb_id": "", "tmdb_kind": "", "provider_ids": "",
+		"original_title": "", "overview": "",
+		"premiere_date": nil, "community_rating": 0, "official_rating": "",
+		"genres": "", "studios": "", "people": "", "tags": "",
+		"poster": "", "thumb": "", "backdrop": "", "logo": "",
+		"scraped": false, "scrape_error": "",
+	}
+	if name, year := fallbackTitle(&it); name != "" {
+		updates["name"] = name
+		updates["sort_name"] = strings.ToLower(name)
+		updates["initials"] = models.InitialsOf(name)
+		if year > 0 {
+			updates["year"] = year
+		}
+	}
+	if err := db.DB.Model(&models.Item{}).Where("id = ?", itemID).Updates(updates).Error; err != nil {
+		return err
+	}
+	logx.InfoC(logx.CatScrape, "已清除条目元数据（恢复未刮削状态）：《%s》· %s", it.Name, it.Path)
+	return nil
+}
+
+// fallbackTitle 清除元数据后的回退标题：电影用文件路径（含中文目录名优先），
+// 剧集用目录名解析；解析不出时保留原名。
+func fallbackTitle(it *models.Item) (string, int) {
+	if it.Path == "" {
+		return it.Name, it.Year
+	}
+	var p Parsed
+	if it.Type == "Series" {
+		p = ParseName(filepath.Base(it.Path))
+	} else {
+		p = movieTitleFromPath(it.Path)
+	}
+	if p.Title == "" {
+		return it.Name, it.Year
+	}
+	year := it.Year
+	if p.Year > 0 {
+		year = p.Year
+	}
+	return p.Title, year
+}
+
+// ClearFailedMetadata 一键清除刮削失败清单中全部条目的元数据，返回清除数。
+func (s *Scanner) ClearFailedMetadata() int {
+	var ids []string
+	db.DB.Model(&models.Item{}).
+		Where("type IN ? AND scrape_error != '' AND duplicate_of = ''", []string{"Movie", "Series"}).
+		Pluck("id", &ids)
+	return s.clearMetadataBatch(ids)
+}
+
+// ClearIncompleteMetadata 一键清除信息不全清单中全部条目的元数据。
+func (s *Scanner) ClearIncompleteMetadata() (int, error) {
+	ids, err := incompleteItemIDs()
+	if err != nil {
+		return 0, err
+	}
+	return s.clearMetadataBatch(ids), nil
+}
+
+func (s *Scanner) clearMetadataBatch(ids []string) int {
+	n := 0
+	for _, id := range ids {
+		if s.ClearItemMetadata(id) == nil {
+			n++
+		}
+	}
+	if n > 0 {
+		logx.InfoC(logx.CatScrape, "一键清除元数据：%d 个条目恢复未刮削状态", n)
+	}
+	return n
+}
+
+// parseManualTmdbRef 解析手动刮削中的 TMDB ID 指定：
+// tmdb:123 / tmdbid:123 / tmdb-id:123（按条目类型定命名空间）、
+// movie:123 / tv:123（强制电影/剧集命名空间）。
+// 无前缀的纯数字不识别，避免《1917》《2012》这类纯数字片名被误当作 ID。
+func parseManualTmdbRef(query string) (int, string, bool) {
+	q := strings.ToLower(strings.TrimSpace(query))
+	for _, prefix := range []string{"tmdb:", "tmdbid:", "tmdb-id:", "movie:", "tv:"} {
+		if strings.HasPrefix(q, prefix) {
+			idStr := strings.TrimSpace(q[len(prefix):])
+			id, err := strconv.Atoi(idStr)
+			if err != nil || id <= 0 || len(idStr) > 9 {
+				return 0, "", false
+			}
+			kind := ""
+			switch prefix {
+			case "movie:", "tv:":
+				kind = prefix[:len(prefix)-1]
+			}
+			return id, kind, true
+		}
+	}
+	return 0, "", false
+}
+
 // rescrapeTitle 自动重刮（无手动关键词）时的搜索标题回退。已刮削过的条目，
 // 其名称可能已被上次（错误的）刮削结果覆盖——用污染名搜索会反复命中同一
-// 错误条目；此处回退文件路径解析出的原始标题与年份。未刮削过的条目名称
-// 来自文件名或 NFO，保持原样。
+// 错误条目；此处回退文件路径解析出的原始标题与年份（含中文目录名优先，
+// 纯英文短词文件名在 TMDB 搜索极易误配）。未刮削过的条目名称来自文件名
+// 或 NFO，保持原样。
 func rescrapeTitle(it *models.Item) (string, int) {
 	if it == nil {
 		return "", 0
 	}
 	if it.Scraped && it.Path != "" {
-		if p := ParseName(filepath.Base(it.Path)); p.Title != "" {
+		if p := movieTitleFromPath(it.Path); p.Title != "" {
 			year := it.Year
 			if p.Year > 0 {
 				year = p.Year
@@ -362,19 +479,20 @@ func rescrapeTitle(it *models.Item) (string, int) {
 	return it.Name, it.Year
 }
 
-// ScrapeNow 立即同步刮削某条目（供 API 调用）。
-func (s *Scanner) ScrapeNow(itemID string) error {
+// ScrapeNow 立即同步刮削某条目（供 API 调用）。forceSearch 为 true 时忽略既有
+// TMDB ID 强制走搜索链（管理员手动刷新的纠错场景）。
+func (s *Scanner) ScrapeNow(itemID string, forceSearch bool) error {
         ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
         defer cancel()
-        return s.scrapeItem(ctx, itemID)
+        return s.scrapeItem(ctx, itemID, forceSearch)
 }
 
 // scrapeItem 刮削单个条目。
-func (s *Scanner) scrapeItem(ctx context.Context, itemID string) error {
-	return s.scrapeItemWithKeyword(ctx, itemID, "", 0)
+func (s *Scanner) scrapeItem(ctx context.Context, itemID string, forceSearch bool) error {
+	return s.scrapeItemWithKeyword(ctx, itemID, "", 0, forceSearch)
 }
 
-func (s *Scanner) scrapeItemWithKeyword(ctx context.Context, itemID, query string, queryYear int) error {
+func (s *Scanner) scrapeItemWithKeyword(ctx context.Context, itemID, query string, queryYear int, forceSearch bool) error {
         set := tmdb.LoadSettings()
         if !LoadEnhanceConfig().TMDB {
                 return fmt.Errorf("TMDB 未开启（设置-增强功能-启动TMDB）")
@@ -414,12 +532,36 @@ func (s *Scanner) scrapeItemWithKeyword(ctx context.Context, itemID, query strin
                         item.TmdbKind = models.TmdbKindForItemType(item.Type)
                 }
         }
+        // 手动指定 TMDB ID（tmdb:123 / movie:123 / tv:123）：跳过搜索按 ID 直连刮削，
+        // 用于直接纠正错配条目（如《告白》误刮成 The Confessions 后指定正确 ID）
+        if query != "" {
+                if id, kind, ok := parseManualTmdbRef(query); ok {
+                        item.TmdbID = strconv.Itoa(id)
+                        if kind != "" {
+                                item.TmdbKind = kind
+                        } else {
+                                item.TmdbKind = models.TmdbKindForItemType(item.Type)
+                        }
+                        ids = map[string]string{"Tmdb": item.TmdbID}
+                        query, queryYear = "", 0
+                        logx.TaskLog("scrape", "info", "手动指定 TMDB 身份：%s-%d，直连刮削", item.TmdbKind, id)
+                }
+        }
 	if query = strings.TrimSpace(query); query != "" {
-	        item.Name = query
-	        item.Year = queryYear
-	        ids = map[string]string{} // 手动关键词要求重新搜索，而不是沿用旧 TMDB ID。
-	        item.TmdbID, item.TmdbKind = "", ""
-	}
+                item.Name = query
+                item.Year = queryYear
+                ids = map[string]string{} // 手动关键词要求重新搜索，而不是沿用旧 TMDB ID。
+                item.TmdbID, item.TmdbKind = "", ""
+        }
+        // 手动「重新刮削」（无关键词）：忽略既有 TMDB ID 强制走搜索链。
+        // 错配条目的旧 ID 直连会永远拿到同一错误结果，重刮无法纠正。
+        if forceSearch && query == "" {
+                if item.TmdbID != "" {
+                        logx.TaskLog("scrape", "info", "手动重刮：忽略既有 TMDB ID=%s，强制重新搜索", item.TmdbID)
+                }
+                ids = map[string]string{}
+                item.TmdbID, item.TmdbKind = "", ""
+        }
 	// 数据库层 TMDB 去重：同库同身份已有可见正主时直接并入，跳过重复刮削
 	if query == "" && item.TmdbID != "" {
 	        if c, ok := findVisibleCounterpart(&item); ok {
@@ -785,14 +927,21 @@ func (s *Scanner) scrapeMovie(ctx context.Context, item *models.Item, set tmdb.S
                         logx.InfoC(logx.CatTMDB, "TMDB 未找到电影: %s (%d)", title, year)
                         return fmt.Errorf("TMDB 未找到匹配: %s (%d)", title, year)
                 }
-				best := bestMovieResult(results, matchYear)
+				// scrapeMovie 末尾的择优（原文件名/AI 关键词直搜结果）
+				{
+				refNames := []string{title}
+				if aiKeywords != nil {
+					refNames = append(refNames, aiKeywords.Title, aiKeywords.OriginalTitle)
+				}
+				best := bestMovieResult(results, matchYear, refNames...)
 				searchPosterPath = best.PosterPath
-                logx.TaskLog("scrape", "info", "命中《%s》(首播 %s) TmdbID=%d", best.Title, best.ReleaseDate, best.ID)
-                d, err := tmdb.GetMovie(ctx, set.APIKey, best.ID, set.Language)
-                if err != nil {
-                        return err
-                }
-                detail = d
+				logx.TaskLog("scrape", "info", "命中《%s》(首播 %s) TmdbID=%d", best.Title, best.ReleaseDate, best.ID)
+				d, err := tmdb.GetMovie(ctx, set.APIKey, best.ID, set.Language)
+				if err != nil {
+					return err
+				}
+				detail = d
+				}
         }
 		if detail.PosterPath == "" {
 			detail.PosterPath = searchPosterPath
@@ -824,23 +973,138 @@ func (s *Scanner) scrapeMovie(ctx context.Context, item *models.Item, set tmdb.S
         return nil
 }
 
-func bestMovieResult(results []tmdb.SearchResult, year int) tmdb.SearchResult {
+// 命中等级（完全匹配，数值越小越优先）。
+const (
+	matchNone      = 0
+	matchCNENYear  = 1 // 中文名+英文名+年份完全匹配
+	matchCNYear    = 2 // 中文名+年份完全匹配
+	matchCNEN      = 3 // 中文名+英文名完全匹配（无年份支撑）
+	matchCNOnly    = 4 // 仅中文名完全匹配
+	matchENYear    = 5 // 英文名+年份完全匹配
+	matchENOnly    = 6 // 仅英文名完全匹配
+)
+
+// classifyRefs 参考名分类拆解。混合标题（如目录名解析出的「告白 Confessions」）
+// 拆出中文段与拉丁段分别归入中文名/英文名集合；纯拉丁或其它非汉字参考名
+// 整体归英文名集合（与 TMDB original_title 对齐，含韩文等外文原名）。
+func classifyRefs(names ...string) (cn, en []string) {
+	for _, n := range names {
+		n = strings.TrimSpace(n)
+		if n == "" {
+			continue
+		}
+		if !hasHan(n) {
+			en = append(en, n)
+			continue
+		}
+		cn = append(cn, hanSegRe.FindAllString(n, -1)...)
+		en = append(en, latinSegRe.FindAllString(n, -1)...)
+	}
+	return cn, en
+}
+
+// yearMatches 年份匹配（允许 ±1 年误差）：电影节首映与公映、不同地区发行
+// 常跨年，如搜索 1990 时 1989/1990/1991 均视为匹配。want<=0 时视为不匹配。
+func yearMatches(resultYear, want int) bool {
+	if want <= 0 {
+		return false
+	}
+	return absInt(resultYear-want) <= 1
+}
+
+// tmdbMatchLevel 命中规则分级（完全匹配，越小越优先）：
+//   中文名+英文名+年份 > 中文名+年份 > 中文名+英文名 > 中文名 > 英文名+年份 > 英文名
+//
+// 双名匹配不带年份时次于「中文名+年份」：同名英语翻拍片的 original_title 恰为
+// 英文，会与 AI 的中英双名都完全匹配，若无年份约束会压过年份正确的原版。
+// 中文名比 TMDB 的 title/name，英文名比 original_title/original_name；
+// 参考名集合任一完全匹配（归一化后相等）即算命中；year<=0 时不计年份维度。
+func tmdbMatchLevel(result tmdb.SearchResult, cn, en []string, year int) int {
+	cnOK := refExactAny(cn, firstNonEmpty(result.Title, result.Name))
+	enOK := refExactAny(en, firstNonEmpty(result.OriginalTitle, result.OriginalName))
+	yearOK := year > 0 && (yearMatches(parseYear(result.ReleaseDate), year) || yearMatches(parseYear(result.FirstAirDate), year))
+	switch {
+	case cnOK && enOK && yearOK:
+		return matchCNENYear
+	case cnOK && yearOK:
+		return matchCNYear
+	case cnOK && enOK:
+		return matchCNEN
+	case cnOK:
+		return matchCNOnly
+	case enOK && yearOK:
+		return matchENYear
+	case enOK:
+		return matchENOnly
+	}
+	return matchNone
+}
+
+// refExactAny 参考名集合中任一与 got 完全匹配（归一化后相等）。
+func refExactAny(refs []string, got string) bool {
+	got = strings.TrimSpace(got)
+	if got == "" {
+		return false
+	}
+	gotNorm := normalizeSearchTitle(got)
+	if gotNorm == "" {
+		return false
+	}
+	for _, want := range refs {
+		if n := normalizeSearchTitle(want); n != "" && n == gotNorm {
+			return true
+		}
+	}
+	return false
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func bestMovieResult(results []tmdb.SearchResult, year int, names ...string) tmdb.SearchResult {
 	if len(results) == 0 {
 		return tmdb.SearchResult{}
 	}
+	cn, en := classifyRefs(names...)
 	best := results[0]
-	bestYearMatch := year > 0 && parseYear(best.ReleaseDate) == year
-	for _, result := range results {
-		resultYearMatch := year > 0 && parseYear(result.ReleaseDate) == year
-		sameYearMatch := resultYearMatch == bestYearMatch
-		betterArtwork := best.PosterPath == "" && result.PosterPath != ""
-		sameArtworkAndHigherRating := (best.PosterPath != "") == (result.PosterPath != "") && result.VoteAverage > best.VoteAverage
-		if resultYearMatch && !bestYearMatch || sameYearMatch && (betterArtwork || sameArtworkAndHigherRating) {
-			best = result
-			bestYearMatch = resultYearMatch
+	bestLevel := tmdbMatchLevel(best, cn, en, year)
+	bestYearMatch := yearMatches(parseYear(best.ReleaseDate), year)
+	for _, result := range results[1:] {
+		level := tmdbMatchLevel(result, cn, en, year)
+		yearMatch := yearMatches(parseYear(result.ReleaseDate), year)
+		if betterPick(result, level, yearMatch, best, bestLevel, bestYearMatch) {
+			best, bestLevel, bestYearMatch = result, level, yearMatch
 		}
 	}
 	return best
+}
+
+// matchLevelRank 排序用的等级值：无匹配（0）视为最低优先级。
+func matchLevelRank(level int) int {
+	if level == matchNone {
+		return 1 << 20
+	}
+	return level
+}
+
+// betterPick 命中规则择优：等级小者胜（无匹配垫底）；同级按 年份匹配 > 有海报 > 高评分。
+func betterPick(result tmdb.SearchResult, level int, yearMatch bool,
+	best tmdb.SearchResult, bestLevel int, bestYearMatch bool) bool {
+	if level != bestLevel {
+		return matchLevelRank(level) < matchLevelRank(bestLevel)
+	}
+	if yearMatch != bestYearMatch {
+		return yearMatch
+	}
+	betterArtwork := best.PosterPath == "" && result.PosterPath != ""
+	sameArtwork := (best.PosterPath != "") == (result.PosterPath != "")
+	return betterArtwork || (sameArtwork && result.VoteAverage > best.VoteAverage)
 }
 
 func searchWithAIKeywords(ctx context.Context, key, lang string, keywords *AIKeywords, search func(context.Context, string, string, string, int) ([]tmdb.SearchResult, error)) ([]tmdb.SearchResult, error) {
@@ -891,7 +1155,7 @@ func (s *Scanner) aiNonMovieSearch(ctx context.Context, set tmdb.Settings, keywo
 	tvFound []tmdb.SearchResult, matchYear int,
 	movieSearch func(context.Context, string, string, string, int) ([]tmdb.SearchResult, error)) (string, []tmdb.SearchResult, error) {
 	if len(tvFound) > 0 {
-		best := bestTVResult(tvFound, matchYear)
+		best := bestTVResult(tvFound, matchYear, keywords.Title, keywords.OriginalTitle)
 		logx.TaskLog("scrape", "info", "AI 命中 TV《%s》(首播 %s) TmdbID=%d", best.Name, best.FirstAirDate, best.ID)
 		return fmt.Sprint(best.ID), nil, nil
 	}
@@ -908,20 +1172,18 @@ func (s *Scanner) aiNonMovieSearch(ctx context.Context, set tmdb.Settings, keywo
 	return "", movieResults, nil
 }
 
-type aiScoredResult struct {
-	result tmdb.SearchResult
-	score  float64
-}
-
-// bestEffortAIResults 严格过滤（年份+标题）无命中时的兜底：仅按标题相似度
-// （阈值与严格模式一致）保留结果，不因发行日期缺失或年份偏差丢弃；排序优先
-// 有发行日期且与期望年份最接近的条目，降低同名翻拍误配的概率。
+// bestEffortAIResults 严格过滤无命中时的兜底：仅按标题相似度
+// （阈值与严格模式一致）保留结果，不因发行日期缺失或年份偏差丢弃；排序按
+// 命中等级 → 标题相似度 → 有日期且与期望年份最接近 → 海报 → 评分，
+// 降低同名翻拍误配的概率。
 func bestEffortAIResults(results []tmdb.SearchResult, keywords *AIKeywords) []tmdb.SearchResult {
 	if keywords == nil || len(results) == 0 {
 		return nil
 	}
+	cn, en := classifyRefs(keywords.Title, keywords.OriginalTitle)
 	type entry struct {
 		result  tmdb.SearchResult
+		level   int
 		score   float64
 		hasDate bool
 		yearGap int
@@ -941,12 +1203,15 @@ func bestEffortAIResults(results []tmdb.SearchResult, keywords *AIKeywords) []tm
 		if keywords.Year <= 0 {
 			yearGap = 0 // 无期望年份时不按日期排序
 		}
-		entries = append(entries, entry{result, score, hasDate, yearGap})
+		entries = append(entries, entry{result, tmdbMatchLevel(result, cn, en, keywords.Year), score, hasDate, yearGap})
 	}
 	if len(entries) == 0 {
 		return nil
 	}
 	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].level != entries[j].level {
+			return matchLevelRank(entries[i].level) < matchLevelRank(entries[j].level)
+		}
 		if entries[i].score != entries[j].score {
 			return entries[i].score > entries[j].score
 		}
@@ -969,26 +1234,44 @@ func absInt(x int) int {
 	return x
 }
 
-// filterAIKeywordResults 只保留年份和标题都与 AI 关键词相关的结果。TMDB 搜索可能
-// 返回标题局部重合或年份不同的无关条目，不能只按海报或评分选择。
+// filterAIKeywordResults 按「完全匹配命中规则 + 标题相似度」过滤排序 AI 关键词
+// 的 TMDB 结果。命中等级（越小越优先）：
+//   1. 中文名+英文名完全匹配
+//   2. 中文名+年份完全匹配
+//   3. 中文名完全匹配
+//   4. 英文名+年份完全匹配
+//   5. 英文名完全匹配
+//
+// 无任何完全匹配时，保留「标题相似度≥60 且年份匹配」的相似结果（防误配的
+// 保守语义）；两者都不满足的结果丢弃，交由 bestEffortAIResults 兜底。
 func filterAIKeywordResults(results []tmdb.SearchResult, keywords *AIKeywords) []tmdb.SearchResult {
-	matched := make([]aiScoredResult, 0, len(results))
+	type entry struct {
+		result tmdb.SearchResult
+		level  int
+		score  float64
+	}
+	cn, en := classifyRefs(keywords.Title, keywords.OriginalTitle)
+	matched := make([]entry, 0, len(results))
 	for _, result := range results {
-		if !aiResultYearMatches(result, keywords.Year) {
-			continue
-		}
 		titleScore := aiResultTitleScore(result, keywords)
 		if titleScore < 60 {
 			continue
+		}
+		level := tmdbMatchLevel(result, cn, en, keywords.Year)
+		if level == matchNone && !aiResultYearMatches(result, keywords.Year) {
+			continue // 无完全匹配且年份不符：不能证明相关，留给兜底
 		}
 		score := titleScore * 100
 		if result.PosterPath != "" {
 			score += 2
 		}
 		score += result.VoteAverage * 0.1
-		matched = append(matched, aiScoredResult{result: result, score: score})
+		matched = append(matched, entry{result, level, score})
 	}
 	sort.SliceStable(matched, func(i, j int) bool {
+		if matched[i].level != matched[j].level {
+			return matchLevelRank(matched[i].level) < matchLevelRank(matched[j].level)
+		}
 		return matched[i].score > matched[j].score
 	})
 	out := make([]tmdb.SearchResult, 0, len(matched))
@@ -1002,7 +1285,7 @@ func aiResultYearMatches(result tmdb.SearchResult, year int) bool {
 	if year <= 0 {
 		return true
 	}
-	return parseYear(result.ReleaseDate) == year || parseYear(result.FirstAirDate) == year
+	return yearMatches(parseYear(result.ReleaseDate), year) || yearMatches(parseYear(result.FirstAirDate), year)
 }
 
 // aiResultTitleScore 标题相似度：按字段严格对齐匹配。TMDB（language=zh-CN）
@@ -1095,20 +1378,19 @@ func searchTitleTokens(s string) []string {
 	return tokens
 }
 
-func bestTVResult(results []tmdb.SearchResult, year int) tmdb.SearchResult {
+func bestTVResult(results []tmdb.SearchResult, year int, names ...string) tmdb.SearchResult {
 	if len(results) == 0 {
 		return tmdb.SearchResult{}
 	}
+	cn, en := classifyRefs(names...)
 	best := results[0]
-	bestYearMatch := year > 0 && parseYear(best.FirstAirDate) == year
-	for _, result := range results {
-		resultYearMatch := year > 0 && parseYear(result.FirstAirDate) == year
-		sameYearMatch := resultYearMatch == bestYearMatch
-		betterArtwork := best.PosterPath == "" && result.PosterPath != ""
-		sameArtworkAndHigherRating := (best.PosterPath != "") == (result.PosterPath != "") && result.VoteAverage > best.VoteAverage
-		if resultYearMatch && !bestYearMatch || sameYearMatch && (betterArtwork || sameArtworkAndHigherRating) {
-			best = result
-			bestYearMatch = resultYearMatch
+	bestLevel := tmdbMatchLevel(best, cn, en, year)
+	bestYearMatch := yearMatches(parseYear(best.FirstAirDate), year)
+	for _, result := range results[1:] {
+		level := tmdbMatchLevel(result, cn, en, year)
+		yearMatch := yearMatches(parseYear(result.FirstAirDate), year)
+		if betterPick(result, level, yearMatch, best, bestLevel, bestYearMatch) {
+			best, bestLevel, bestYearMatch = result, level, yearMatch
 		}
 	}
 	return best
@@ -1391,7 +1673,11 @@ func (s *Scanner) scrapeSeries(ctx context.Context, item *models.Item, set tmdb.
                         logx.InfoC(logx.CatTMDB, "TMDB 未找到剧集: %s", title)
                         return fmt.Errorf("TMDB 未找到匹配: %s", title)
                 }
-                best := bestTVResult(results, matchYear)
+		refNames := []string{title}
+		if aiKeywords != nil {
+			refNames = append(refNames, aiKeywords.Title, aiKeywords.OriginalTitle)
+		}
+		best := bestTVResult(results, matchYear, refNames...)
                 logx.TaskLog("scrape", "info", "命中《%s》(首播 %s) TmdbID=%d", best.Name, best.FirstAirDate, best.ID)
                 d, err := tmdb.GetTV(ctx, set.APIKey, best.ID, set.Language)
                 if err != nil {

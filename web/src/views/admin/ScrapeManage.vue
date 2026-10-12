@@ -69,6 +69,7 @@
       <div class="head">
         刮削失败（{{ failed.length }}）
         <span style="flex:1"></span>
+        <button v-if="failed.length" class="btn ghost sm" @click="clearFailedAll" :disabled="clearingFailed">一键清除元数据</button>
         <button v-if="failed.length" class="btn sm" @click="retryAll">重试全部</button>
       </div>
       <div class="body" v-if="failed.length">
@@ -82,6 +83,7 @@
               <td><div style="display:flex;gap:6px;flex-wrap:wrap;">
                 <button class="btn ghost sm" :disabled="workingID === f.ID" @click="scrapeOne(f)">重新获取</button>
                 <button class="btn ghost sm" :disabled="workingID === f.ID" @click="openManual(f)">手动关键词</button>
+                <button class="btn ghost sm" :disabled="workingID === f.ID" @click="clearOne(f)">清除元数据</button>
               </div></td>
             </tr>
           </tbody>
@@ -98,6 +100,7 @@
         <span v-if="incompleteItems.TotalRecordCount > incompleteItems.Items.length" class="muted" style="font-size:12px;margin-right:8px;">
           当前显示 {{ incompleteItems.Items.length }} 条
         </span>
+        <button v-if="incompleteItems.TotalRecordCount > 0" class="btn ghost sm" @click="clearIncompleteAll" :disabled="clearingIncomplete">一键清除元数据</button>
         <button v-if="incompleteItems.TotalRecordCount > 0" class="btn sm" @click="retryIncompleteAll" :disabled="retryingAllIncomplete || !incompleteItems.TMDBConfigured">
           {{ retryingAllIncomplete ? '入队中…' : '一键重新刮削' }}
         </button>
@@ -128,6 +131,7 @@
               <td><div style="display:flex;gap:6px;flex-wrap:wrap;">
                 <button class="btn ghost sm" :disabled="workingID === f.ID" @click="scrapeOne(f)">重新刮削</button>
                 <button class="btn ghost sm" :disabled="workingID === f.ID" @click="openManual(f)">手动关键词</button>
+                <button class="btn ghost sm" :disabled="workingID === f.ID" @click="clearOne(f)">清除元数据</button>
               </div></td>
             </tr>
           </tbody>
@@ -141,10 +145,13 @@
         <div class="modal-title">手动指定 TMDB 搜索关键词</div>
         <div class="muted" style="font-size:12.5px;margin-bottom:12px;">{{ manualItem.Name }} · {{ manualItem.Type === 'Series' ? '剧集' : '电影' }}</div>
         <label>片名或外文原名</label>
-        <input v-model="manualKeyword" maxlength="200" autofocus placeholder="例如：The Matrix" @keyup.enter="submitManual" />
+        <input v-model="manualKeyword" maxlength="200" autofocus placeholder="例如：The Matrix，或 tmdb:603 指定 TMDB ID" @keyup.enter="submitManual" />
         <label>上映 / 首播年份（可选）</label>
         <input v-model.number="manualYear" type="number" min="0" max="2100" placeholder="留空则不限制年份" />
-        <div class="muted" style="font-size:12px;margin-top:8px;">系统将忽略该条目已有 TMDB ID，按关键词重新搜索；找到后会更新该条目的元数据。</div>
+        <div class="muted" style="font-size:12px;margin-top:8px;">
+          系统将忽略该条目已有 TMDB ID，按关键词重新搜索；找到后会更新该条目的元数据。<br />
+          也可直接指定 TMDB 编号跳过搜索：tmdb:603（按条目类型）、movie:603、tv:1396；年份填 0。纯数字（如 1917）仍按片名搜索。
+        </div>
         <div class="modal-actions">
           <button class="btn ghost" @click="closeManual" :disabled="workingID === manualItem.ID">取消</button>
           <button class="btn" @click="submitManual" :disabled="!manualKeyword.trim() || workingID === manualItem.ID">{{ workingID === manualItem.ID ? '提交中…' : '搜索并获取元数据' }}</button>
@@ -269,6 +276,50 @@ async function retryIncompleteAll() {
 }
 async function scrapeOne(f) {
   await queueScrape(f)
+}
+const clearingFailed = ref(false)
+const clearingIncomplete = ref(false)
+async function clearOne(f) {
+  if (!confirm(`将清除《${f.Name}》的刮削元数据（TMDB 身份、简介、图片等），名称回退为文件名/目录名解析，之后可重新刮削。继续？`)) return
+  workingID.value = f.ID
+  try {
+    await api.admin.scrapeClearMetadata(f.ID)
+    toast(`已清除《${f.Name}》的元数据`)
+    setTimeout(loadAll, 400)
+  } catch (e) {
+    toast(errText(e), true)
+  } finally {
+    workingID.value = ''
+  }
+}
+async function clearFailedAll() {
+  if (!failed.value.length) return
+  if (!confirm(`将清除 ${failed.value.length} 个失败条目的刮削元数据（恢复未刮削状态），之后可重试或手动刮削。继续？`)) return
+  clearingFailed.value = true
+  try {
+    const r = await api.admin.scrapeFailedClearMetadata()
+    toast(`已清除 ${r.Cleared ?? 0} 个条目的元数据`)
+    setTimeout(loadAll, 600)
+  } catch (e) {
+    toast(errText(e), true)
+  } finally {
+    clearingFailed.value = false
+  }
+}
+async function clearIncompleteAll() {
+  const total = incompleteItems.value.TotalRecordCount || 0
+  if (!total) return
+  if (!confirm(`将清除 ${total} 个信息不全条目的刮削元数据（恢复未刮削状态，用于错配纠正），之后可一键重新刮削。继续？`)) return
+  clearingIncomplete.value = true
+  try {
+    const r = await api.admin.scrapeIncompleteClearMetadata()
+    toast(`已清除 ${r.Cleared ?? 0} 个条目的元数据`)
+    setTimeout(loadAll, 600)
+  } catch (e) {
+    toast(errText(e), true)
+  } finally {
+    clearingIncomplete.value = false
+  }
 }
 function openManual(f) {
   manualItem.value = f

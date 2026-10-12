@@ -1,6 +1,8 @@
 package scanner
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -42,6 +44,59 @@ func TestClearFailedTmdbIdentity(t *testing.T) {
 
 	// 不存在的条目：no-op 不报错
 	clearFailedTmdbIdentity("missing-item")
+}
+
+// TestClearItemMetadata 清除元数据：恢复未刮削状态，名称/年份回退文件路径
+// （中文目录名优先），媒体源与播放状态保留。
+func TestClearItemMetadata(t *testing.T) {
+	d := setupDedupeDB(t)
+	s := &Scanner{}
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "奇迹男孩.Wonder.2017.BluRay.1080p"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	it := models.Item{ID: "w1", LibraryID: "lib1", Type: "Movie",
+		Name: "LEGO DC Super Hero Girls: Galactic Wonder", Year: 2017,
+		TmdbID: "442841", TmdbKind: "movie", ProviderIDs: `{"Tmdb":"442841","Imdb":"tt123"}`,
+		Overview: "错误条目的简介", People: `[{"Name":"X"}]`, Poster: "/img/wrong.jpg",
+		Scraped: true, CommunityRating: 7.1,
+		Path: filepath.Join(dir, "奇迹男孩.Wonder.2017.BluRay.1080p", "Wonder.2017.BluRay.1080p.x265.strm"),
+		DateCreated: time.Now(), UpdatedAt: time.Now()}
+	if err := d.Create(&it).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Create(&models.MediaSource{ID: "src-w1", ItemID: "w1", Path: it.Path, Default: true}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Create(&models.UserDatum{ID: "u1|w1", UserID: "u1", ItemID: "w1", PositionTicks: 88}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.ClearItemMetadata("w1"); err != nil {
+		t.Fatal(err)
+	}
+	got := itemByID(t, d, "w1")
+	if got.Scraped || got.TmdbID != "" || got.TmdbKind != "" || got.ProviderIDs != "" {
+		t.Fatalf("刮削状态与 TMDB 身份应清空: %+v", got)
+	}
+	if got.Overview != "" || got.People != "" || got.Poster != "" || got.CommunityRating != 0 {
+		t.Fatalf("线上元数据应清空: overview=%q people=%q poster=%q", got.Overview, got.People, got.Poster)
+	}
+	if !strings.Contains(got.Name, "奇迹男孩") || got.Year != 2017 {
+		t.Fatalf("名称应回退中文目录名解析: name=%q year=%d", got.Name, got.Year)
+	}
+	// 媒体源与播放状态保留
+	var srcCnt int64
+	d.Model(&models.MediaSource{}).Where("item_id = ?", "w1").Count(&srcCnt)
+	if srcCnt != 1 {
+		t.Fatalf("媒体源不应被清除: %d", srcCnt)
+	}
+	if ud, ok := datumByItem(d, "u1", "w1"); !ok || ud.PositionTicks != 88 {
+		t.Fatalf("播放状态应保留: %+v", ud)
+	}
+	if !shouldQueueScrape(&got) {
+		t.Fatal("清除后的条目应可自动重新刮削")
+	}
 }
 
 // TestRescrapeTitleFallsBackToFileName 复现《龙的传人》场景：条目名已被上次

@@ -289,8 +289,8 @@ func (s *Scanner) scanMoviesDir(lib *models.Library, root string, full bool, see
 		// 剧集/样本防混入：电影库只收录电影文件。命中集号模式（SxxExx、
 		// 第N季第N集、第N集）或样本/预告分词的文件跳过入库，历史上误建的
 		// 条目一并清理——否则同一部剧的每集都会变成同名“电影”，刮削错配、
-		// TMDB 去重还会把它们错误归并。
-		if p := ParseName(filepath.Base(vf.path)); p.IsSample || p.Episode > 0 {
+		// TMDB 去重还会把它们错误归并。目录名含中文时优先按目录名解析。
+		if p := movieTitleFromPath(vf.path); p.IsSample || p.Episode > 0 {
 			seen[vf.path] = vf.mtime
 			cnt.files++
 			cnt.skipped++
@@ -365,7 +365,7 @@ func (s *Scanner) removeMisclassified(lib *models.Library, path string, p Parsed
 
 // upsertMovie 建立或更新电影条目。
 func (s *Scanner) upsertMovie(lib *models.Library, vf videoFile) error {
-        parsed := ParseName(filepath.Base(vf.path))
+        parsed := movieTitleFromPath(vf.path) // 目录名含中文时优先（文件名可能只是纯英文短词）
         item := models.Item{
                 LibraryID: lib.ID, Type: "Movie",
                 Name: parsed.Title, SortName: strings.ToLower(parsed.Title),

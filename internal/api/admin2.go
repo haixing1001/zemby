@@ -491,6 +491,53 @@ func (a *App) adminScrapeRetry(w http.ResponseWriter, r *http.Request) {
         a.json(w, 200, M{"OK": true, "Queued": n})
 }
 
+// adminScrapeClearMetadata 清除指定条目的刮削元数据（恢复未刮削状态，
+// 名称回退文件名/目录名解析，可配合手动关键词或 tmdb:ID 重新刮削）。
+func (a *App) adminScrapeClearMetadata(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		a.fail(w, 405, "方法不支持")
+		return
+	}
+	var body struct {
+		ItemID string `json:"ItemID"`
+	}
+	if err := bodyJSON(r, &body); err != nil || strings.TrimSpace(body.ItemID) == "" {
+		a.fail(w, 400, "参数无效")
+		return
+	}
+	if err := a.scanner.ClearItemMetadata(strings.ToLower(body.ItemID)); err != nil {
+		a.fail(w, 500, err.Error())
+		return
+	}
+	a.json(w, 200, M{"OK": true})
+}
+
+// adminScrapeFailedClearMetadata 一键清除失败清单全部条目的元数据。
+func (a *App) adminScrapeFailedClearMetadata(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		a.fail(w, 405, "方法不支持")
+		return
+	}
+	n := a.scanner.ClearFailedMetadata()
+	logx.InfoC(logx.CatScrape, "一键清除失败清单元数据：%d 个条目恢复未刮削状态", n)
+	a.json(w, 200, M{"OK": true, "Cleared": n})
+}
+
+// adminScrapeIncompleteClearMetadata 一键清除信息不全清单全部条目的元数据。
+func (a *App) adminScrapeIncompleteClearMetadata(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		a.fail(w, 405, "方法不支持")
+		return
+	}
+	n, err := a.scanner.ClearIncompleteMetadata()
+	if err != nil {
+		a.fail(w, 500, "查询信息不全条目失败")
+		return
+	}
+	logx.InfoC(logx.CatScrape, "一键清除信息不全清单元数据：%d 个条目恢复未刮削状态", n)
+	a.json(w, 200, M{"OK": true, "Cleared": n})
+}
+
 // adminScrapeIncompleteRetry 一键重刮诊断判定为信息不全的条目。
 func (a *App) adminScrapeIncompleteRetry(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
