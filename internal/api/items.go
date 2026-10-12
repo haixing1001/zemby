@@ -166,7 +166,8 @@ func normalizeTypes(in []string) []string {
 
 // queryItems 执行查询，返回条目与总数。
 func (a *App) queryItems(q *itemQuery) ([]models.Item, int) {
-        dbq := a.db.Model(&models.Item{}).Where("type IN ?", []string{"Movie", "Series", "Season", "Episode"})
+        dbq := a.db.Model(&models.Item{}).Where("type IN ?", []string{"Movie", "Series", "Season", "Episode"}).
+                Where("duplicate_of = ''") // TMDB 去重：软隐藏的重复条目不参与前台查询
 
         // Ids
         if len(q.ids) > 0 {
@@ -441,37 +442,63 @@ func (a *App) groupVersions(all []models.Item) ([]models.Item, int) {
         return out, len(out)
 }
 
-// versionMembers 同身份的其它电影条目（跨库或库内，按开关）。
+// versionMembers 同身份的其它条目：
+// 1) 数据库层 TMDB 去重产生的软隐藏成员（duplicate_of 指向本条目）——无论开关都聚合，
+//    否则这些重复文件在前台彻底不可达；集的成员让正主集获得多版本可选。
+// 2) 开关控制的同名同身份合并（跨库或库内，仅电影）。
 func (a *App) versionMembers(it *models.Item) []models.Item {
-        enh := scanner.LoadEnhanceConfig()
-        if it.Type != "Movie" || (!enh.MergeVersionsInLibrary && !enh.MergeVersionsAcrossLibraries) {
-                return nil
-        }
-        if tmdbID := strings.TrimSpace(it.TmdbID); tmdbID != "" {
-                tmdbKind := strings.TrimSpace(it.TmdbKind)
-                if tmdbKind == "" {
-                        tmdbKind = "movie"
-                }
-                q := a.db.Where("type = 'Movie' AND id <> ? AND tmdb_id = ? AND tmdb_kind = ?", it.ID, tmdbID, tmdbKind)
-                if !enh.MergeVersionsAcrossLibraries {
-                        q = q.Where("library_id = ?", it.LibraryID)
-                }
-                var out []models.Item
-                q.Order("date_created").Limit(100).Find(&out)
-                return out
-        }
-        name := strings.ToLower(strings.TrimSpace(it.Name))
-        if name == "" {
-                return nil
-        }
-        q := a.db.Where("type = 'Movie' AND id <> ? AND lower(trim(name)) = ? AND year = ?",
-                it.ID, name, it.Year)
-        if !enh.MergeVersionsAcrossLibraries {
-                q = q.Where("library_id = ?", it.LibraryID)
-        }
-        var out []models.Item
-        q.Order("date_created").Limit(100).Find(&out)
-        return out
+	seen := map[string]bool{}
+	out := make([]models.Item, 0, 4)
+	add := func(rows []models.Item) {
+		for i := range rows {
+			if rows[i].ID != it.ID && !seen[rows[i].ID] {
+				seen[rows[i].ID] = true
+				out = append(out, rows[i])
+			}
+			if len(out) >= 100 {
+				return
+			}
+		}
+	}
+	if it.Type == "Movie" || it.Type == "Episode" {
+		var direct []models.Item
+		a.db.Where("duplicate_of = ? AND type = ?", it.ID, it.Type).Order("date_created").Limit(100).Find(&direct)
+		add(direct)
+		if len(out) >= 100 {
+			return out
+		}
+	}
+	enh := scanner.LoadEnhanceConfig()
+	if it.Type != "Movie" || (!enh.MergeVersionsInLibrary && !enh.MergeVersionsAcrossLibraries) {
+		return out
+	}
+	if tmdbID := strings.TrimSpace(it.TmdbID); tmdbID != "" {
+		tmdbKind := strings.TrimSpace(it.TmdbKind)
+		if tmdbKind == "" {
+			tmdbKind = "movie"
+		}
+		q := a.db.Where("type = 'Movie' AND id <> ? AND tmdb_id = ? AND tmdb_kind = ?", it.ID, tmdbID, tmdbKind)
+		if !enh.MergeVersionsAcrossLibraries {
+			q = q.Where("library_id = ?", it.LibraryID)
+		}
+		var found []models.Item
+		q.Order("date_created").Limit(100).Find(&found)
+		add(found)
+		return out
+	}
+	name := strings.ToLower(strings.TrimSpace(it.Name))
+	if name == "" {
+		return out
+	}
+	q := a.db.Where("type = 'Movie' AND id <> ? AND lower(trim(name)) = ? AND year = ?",
+		it.ID, name, it.Year)
+	if !enh.MergeVersionsAcrossLibraries {
+		q = q.Where("library_id = ?", it.LibraryID)
+	}
+	var found []models.Item
+	q.Order("date_created").Limit(100).Find(&found)
+	add(found)
+	return out
 }
 
 // mergedSources 条目媒体源（多版本合并开启且 detail 时聚合同身份成员的源）。
@@ -591,7 +618,7 @@ func (a *App) itemsLatest(w http.ResponseWriter, r *http.Request) {
                 limit = qInt(r, "Limit", 16)
         }
         var items []models.Item
-        dbq := a.db.Where("type IN ?", []string{"Movie", "Series"}).Order("date_created DESC, id DESC").Limit(limit)
+        dbq := a.db.Where("type IN ? AND duplicate_of = ''", []string{"Movie", "Series"}).Order("date_created DESC, id DESC").Limit(limit)
         if q.ParentID != "" && q.ParentID != "root" {
                 dbq = dbq.Where("library_id = ?", q.ParentID)
         }
@@ -609,7 +636,7 @@ func (a *App) itemByRouteID(id string) (models.Item, bool) {
                 if kind == "tv" {
                         itemType = "Series"
                 }
-                err := a.db.Where("type = ? AND tmdb_kind = ? AND tmdb_id = ?", itemType, kind, tmdbID).
+                err := a.db.Where("type = ? AND tmdb_kind = ? AND tmdb_id = ? AND duplicate_of = ''", itemType, kind, tmdbID).
                         Order("CASE WHEN scraped = 1 THEN 0 ELSE 1 END, CASE WHEN poster <> '' THEN 0 ELSE 1 END, date_created, id").
                         First(&it).Error
                 return it, err == nil
@@ -659,7 +686,7 @@ func (a *App) itemSimilar(w http.ResponseWriter, r *http.Request, id string) {
 	}
 	var items []models.Item
 	dbq := a.db.Select("id, library_id, type, name, sort_name, year, genres, community_rating, poster, image_rev, date_created").
-		Where("type = ? AND id <> ?", it.Type, it.ID).
+		Where("type = ? AND id <> ? AND duplicate_of = ''", it.Type, it.ID).
 		Order("community_rating DESC").Limit(500)
         if it.LibraryID != "" {
                 dbq = dbq.Where("library_id = ?", it.LibraryID)

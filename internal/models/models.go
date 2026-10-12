@@ -111,6 +111,7 @@ type Item struct {
         ParentIndexNumber int      `json:"parentIndexNumber,omitempty"` // 季
         Scraped          bool      `json:"-"`
         ScrapeError      string    `gorm:"size:512" json:"-"` // 最近一次刮削失败原因
+        DuplicateOf      string    `gorm:"index;size:64" json:"-"` // 非空=同 TMDB 身份的重复条目（软隐藏），值为正主条目 ID
         Poster           string    `gorm:"size:768" json:"-"` // 本地或已下载图片路径
         Thumb            string    `gorm:"size:768" json:"-"`
         Backdrop         string    `gorm:"size:768" json:"-"`

@@ -108,13 +108,14 @@ func (a *App) videoStream(w http.ResponseWriter, r *http.Request, id string) {
         srcID := strings.ToLower(q(r, "MediaSourceId"))
         if srcID != "" {
                 if err := a.db.Where("item_id = ? AND id = ?", it.ID, srcID).First(&src).Error; err != nil {
-                        // 多版本合并：源可能属于同身份的其它条目
+                        // 多版本：源可能属于同身份的其它条目（软隐藏成员或同名电影）
                         var alt models.MediaSource
                         if err2 := a.db.First(&alt, "id = ?", srcID).Error; err2 == nil && alt.ItemID != it.ID {
                                 var owner models.Item
                                 if err3 := a.db.First(&owner, "id = ?", alt.ItemID).Error; err3 == nil &&
+                                        (owner.DuplicateOf == it.ID || // 数据库层去重的直接成员
                                         owner.Type == "Movie" && owner.Year == it.Year &&
-                                        strings.EqualFold(strings.TrimSpace(owner.Name), strings.TrimSpace(it.Name)) {
+                                                strings.EqualFold(strings.TrimSpace(owner.Name), strings.TrimSpace(it.Name))) {
                                         src = alt
                                 }
                         }

@@ -491,9 +491,9 @@ func (a *App) sessions(w http.ResponseWriter, r *http.Request) {
 // itemCounts 条目统计。
 func (a *App) itemCounts(w http.ResponseWriter, r *http.Request) {
         var movies, series, episodes int64
-        a.db.Model(&models.Item{}).Where("type = ?", "Movie").Count(&movies)
-        a.db.Model(&models.Item{}).Where("type = ?", "Series").Count(&series)
-        a.db.Model(&models.Item{}).Where("type = ?", "Episode").Count(&episodes)
+        a.db.Model(&models.Item{}).Where("type = ? AND duplicate_of = ''", "Movie").Count(&movies)
+        a.db.Model(&models.Item{}).Where("type = ? AND duplicate_of = ''", "Series").Count(&series)
+        a.db.Model(&models.Item{}).Where("type = ? AND duplicate_of = ''", "Episode").Count(&episodes)
         a.json(w, 200, M{
                 "MovieCount": movies, "SeriesCount": series, "EpisodeCount": episodes,
                 "AlbumCount": 0, "SongCount": 0, "GameCount": 0, "TrailerCount": 0,

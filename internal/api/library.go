@@ -185,7 +185,7 @@ func (a *App) adminLibrariesList(w http.ResponseWriter, r *http.Request) {
         }
         var counts []itemCount
         a.db.Model(&models.Item{}).Select("library_id, COUNT(1) AS item_count").
-                Where("type IN ?", []string{"Movie", "Episode"}).Group("library_id").Scan(&counts)
+                Where("type IN ? AND duplicate_of = ''", []string{"Movie", "Episode"}).Group("library_id").Scan(&counts)
         countByLibrary := make(map[string]int64, len(counts))
         for _, row := range counts {
                 countByLibrary[row.LibraryID] = row.Count
@@ -420,9 +420,9 @@ func (a *App) adminScrape(w http.ResponseWriter, r *http.Request) {
 // adminStatus 后台状态。
 func (a *App) adminStatus(w http.ResponseWriter, r *http.Request) {
         var movies, series, episodes, users, libs int64
-        a.db.Model(&models.Item{}).Where("type = ?", "Movie").Count(&movies)
-        a.db.Model(&models.Item{}).Where("type = ?", "Series").Count(&series)
-        a.db.Model(&models.Item{}).Where("type = ?", "Episode").Count(&episodes)
+        a.db.Model(&models.Item{}).Where("type = ? AND duplicate_of = ''", "Movie").Count(&movies)
+        a.db.Model(&models.Item{}).Where("type = ? AND duplicate_of = ''", "Series").Count(&series)
+        a.db.Model(&models.Item{}).Where("type = ? AND duplicate_of = ''", "Episode").Count(&episodes)
         a.db.Model(&models.User{}).Count(&users)
         a.db.Model(&models.Library{}).Count(&libs)
         var online int64

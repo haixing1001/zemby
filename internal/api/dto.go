@@ -109,8 +109,23 @@ func (a *App) itemDTOs(items []models.Item, detail bool, userID string) []M {
                         seriesIDs = append(seriesIDs, it.ID)
                 }
         }
-        if detail && (batch.enhance.MergeVersionsInLibrary || batch.enhance.MergeVersionsAcrossLibraries) {
-                batch.movieVersions = a.loadMovieVersions(items, batch.enhance)
+        if detail {
+                if batch.enhance.MergeVersionsInLibrary || batch.enhance.MergeVersionsAcrossLibraries {
+                        batch.movieVersions = a.loadMovieVersions(items, batch.enhance)
+                }
+                // 数据库层 TMDB 去重的软隐藏成员：无论开关都聚合为版本（否则重复文件不可达）
+                for id, members := range a.loadDirectMembers(items) {
+                        existing := batch.movieVersions[id]
+                        have := make(map[string]bool, len(existing))
+                        for i := range existing {
+                                have[existing[i].ID] = true
+                        }
+                        for i := range members {
+                                if !have[members[i].ID] {
+                                        batch.movieVersions[id] = append(batch.movieVersions[id], members[i])
+                                }
+                        }
+                }
                 seenMediaIDs := make(map[string]bool, len(mediaIDs))
                 for _, id := range mediaIDs {
                         seenMediaIDs[id] = true
@@ -170,7 +185,7 @@ func (a *App) itemDTOs(items []models.Item, detail bool, userID string) []M {
                 }
                 var counts []countRow
                 a.db.Model(&models.Item{}).Select("series_id, type, COUNT(1) AS item_count").
-                        Where("series_id IN ? AND type IN ?", seriesIDs, []string{"Episode", "Season"}).
+                        Where("series_id IN ? AND type IN ? AND duplicate_of = ''", seriesIDs, []string{"Episode", "Season"}).
                         Group("series_id, type").Scan(&counts)
                 for _, row := range counts {
                         current := batch.seriesCounts[row.SeriesID]
@@ -212,6 +227,28 @@ func movieVersionIdentityFor(it *models.Item, across bool) movieVersionIdentity 
                 identity.LibraryID = it.LibraryID
         }
         return identity
+}
+
+// loadDirectMembers 数据库层 TMDB 去重的软隐藏成员（duplicate_of 指向列表内条目）。
+// 电影与集都参与：集的正主借此获得重复文件的多版本源。
+func (a *App) loadDirectMembers(items []models.Item) map[string][]models.Item {
+	ids := make([]string, 0, len(items))
+	for i := range items {
+		if items[i].Type == "Movie" || items[i].Type == "Episode" {
+			ids = append(ids, items[i].ID)
+		}
+	}
+	out := map[string][]models.Item{}
+	if len(ids) == 0 {
+		return out
+	}
+	var rows []models.Item
+	a.db.Where("duplicate_of IN ? AND type IN ?", ids, []string{"Movie", "Episode"}).
+		Order("date_created").Limit(500).Find(&rows)
+	for i := range rows {
+		out[rows[i].DuplicateOf] = append(out[rows[i].DuplicateOf], rows[i])
+	}
+	return out
 }
 
 func (a *App) loadMovieVersions(items []models.Item, enhance scanner.EnhanceConfig) map[string][]models.Item {
@@ -442,7 +479,7 @@ func (a *App) itemDTOWithBatch(it *models.Item, detail bool, userID string, batc
         // 媒体源
         if it.Type == "Movie" || it.Type == "Episode" {
                 var sources []M
-                if batch != nil && it.Type == "Movie" && detail {
+                if batch != nil && detail && (it.Type == "Movie" || it.Type == "Episode") {
                         sources = a.sourcesFromRows(it, batch.sources[it.ID], true, batch.streams)
                         for i := range batch.movieVersions[it.ID] {
                                 member := &batch.movieVersions[it.ID][i]

@@ -85,9 +85,9 @@ func memMB() float64 {
 // adminDashboard 控制台数据。
 func (a *App) adminDashboard(w http.ResponseWriter, r *http.Request) {
         var movies, series, episodes, users int64
-        a.db.Model(&models.Item{}).Where("type = ?", "Movie").Count(&movies)
-        a.db.Model(&models.Item{}).Where("type = ?", "Series").Count(&series)
-        a.db.Model(&models.Item{}).Where("type = ?", "Episode").Count(&episodes)
+        a.db.Model(&models.Item{}).Where("type = ? AND duplicate_of = ''", "Movie").Count(&movies)
+        a.db.Model(&models.Item{}).Where("type = ? AND duplicate_of = ''", "Series").Count(&series)
+        a.db.Model(&models.Item{}).Where("type = ? AND duplicate_of = ''", "Episode").Count(&episodes)
         a.db.Model(&models.User{}).Count(&users)
 
         lease := time.Duration(a.cfg.DeviceLeaseSeconds) * time.Second

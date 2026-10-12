@@ -60,6 +60,7 @@ func New(cfg *config.Config) *Scanner {
         }
         dataDirOnce.Do(func() { dataDirValue = cfg.DataDir })
         migrateTmdbAssetFolders()
+        migrateTmdbUniqueness() // 合并存量重复并建 TMDB 唯一索引（须早于工作线程）
         s.StartWorkers()
         // 启动时恢复实时监控状态
         if LoadScrapeConfig().Realtime {
@@ -347,9 +348,10 @@ func (s *Scanner) upsertMovie(lib *models.Library, vf videoFile) error {
         existing, err := findItem(lib.ID, vf.path)
         if err == nil && existing != nil {
                 item.ID = existing.ID
-		item.DateCreated = existing.DateCreated
+                item.DateCreated = existing.DateCreated
                 item.Scraped = existing.Scraped
                 item.ScrapeError = existing.ScrapeError
+                item.DuplicateOf = existing.DuplicateOf
                 item.Poster, item.Backdrop, item.Thumb, item.Logo = existing.Poster, existing.Backdrop, existing.Thumb, existing.Logo
                 item.ProviderIDs, item.Overview = existing.ProviderIDs, existing.Overview
                 item.TmdbID = existing.TmdbID
@@ -541,8 +543,9 @@ func (s *Scanner) upsertSeries(lib *models.Library, seriesDir string, files []vi
                 existing, err := findItem(lib.ID, e.vf.path)
                 if err == nil && existing != nil {
                         item.ID = existing.ID
-		item.DateCreated = existing.DateCreated
+                        item.DateCreated = existing.DateCreated
                         item.Scraped = existing.Scraped
+                        item.DuplicateOf = existing.DuplicateOf
                         item.Poster, item.Thumb = existing.Poster, existing.Thumb
                         item.ProviderIDs, item.Overview = existing.ProviderIDs, existing.Overview
                         item.TmdbID = existing.TmdbID
@@ -630,15 +633,25 @@ func (s *Scanner) removeMissing(libID string, seen seenPaths) int {
                         }
                 }
         }
+        gcDanglingDuplicates() // 清理后重归并悬挂的重复引用
         return removed
 }
 
-// deleteItemCascade 删除条目及其子项、源、流。
+// deleteItemCascade 删除条目及其源、流、播放状态；被删的是可见正主时先晋升重复成员。
 func (s *Scanner) deleteItemCascade(id string) {
+        var victim models.Item
+        promoted := false
+        if err := db.DB.First(&victim, "id = ?", id).Error; err == nil && victim.DuplicateOf == "" {
+                promoteMembers(&victim)
+                promoted = true
+        }
         db.DB.Where("item_id = ?", id).Delete(&models.MediaStream{})
         db.DB.Where("item_id = ?", id).Delete(&models.MediaSource{})
         db.DB.Where("item_id = ?", id).Delete(&models.UserDatum{})
         db.DB.Where("id = ?", id).Delete(&models.Item{})
+        if promoted {
+                gcDanglingDuplicates() // 正主删除后其季/集的悬挂引用立即重新归并
+        }
 }
 
 // dirMtime 目录修改时间。

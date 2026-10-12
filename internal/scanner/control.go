@@ -153,9 +153,9 @@ func GetScrapeState() string {
 // EnqueueAllUnscraped 将所有未刮削条目入队，返回入队数量。
 func (s *Scanner) EnqueueAllUnscraped() int {
         var ids []string
-	query := db.DB.Model(&models.Item{}).Where("type IN ? AND scraped = ?", []string{"Movie", "Series"}, false)
+	query := db.DB.Model(&models.Item{}).Where("type IN ? AND scraped = ? AND duplicate_of = ''", []string{"Movie", "Series"}, false)
 	if tmdb.LoadSettings().DownloadImgs {
-		query = db.DB.Model(&models.Item{}).Where("type IN ? AND (scraped = ? OR (type = 'Movie' AND poster = '' AND scrape_error = ''))", []string{"Movie", "Series"}, false)
+		query = db.DB.Model(&models.Item{}).Where("type IN ? AND (scraped = ? OR (type = 'Movie' AND poster = '' AND scrape_error = '')) AND duplicate_of = ''", []string{"Movie", "Series"}, false)
 	}
 	query.Pluck("id", &ids)
         n := 0
@@ -180,7 +180,7 @@ func (s *Scanner) DrainScrape() int {
 // RetryFailedScrape 重试全部失败条目：清除错误标记并入队。
 func (s *Scanner) RetryFailedScrape() int {
         var ids []string
-        db.DB.Model(&models.Item{}).Where("type IN ? AND scrape_error != ''", []string{"Movie", "Series"}).Pluck("id", &ids)
+        db.DB.Model(&models.Item{}).Where("type IN ? AND scrape_error != '' AND duplicate_of = ''", []string{"Movie", "Series"}).Pluck("id", &ids)
         if len(ids) == 0 {
                 return 0
         }
@@ -200,7 +200,7 @@ func (s *Scanner) RetryFailedScrape() int {
 // FailedScrapes 失败清单。
 func FailedScrapes(limit int) []map[string]any {
         var items []models.Item
-        db.DB.Where("type IN ? AND scrape_error != ''", []string{"Movie", "Series"}).
+        db.DB.Where("type IN ? AND scrape_error != '' AND duplicate_of = ''", []string{"Movie", "Series"}).
                 Order("updated_at DESC").Limit(limit).Find(&items)
         out := []map[string]any{}
         for i := range items {
@@ -224,7 +224,7 @@ func IncompleteItems(limit int) ([]map[string]any, int, error) {
 	}
 	var items []models.Item
 	if err := db.DB.Select("id, name, type, tmdb_id, tmdb_kind, path, year, poster, backdrop, people, overview, scrape_error, updated_at").
-		Where("type IN ?", []string{"Movie", "Series"}).
+		Where("type IN ? AND duplicate_of = ''", []string{"Movie", "Series"}).
 		Order("updated_at DESC").Find(&items).Error; err != nil {
 		return nil, 0, err
 	}
@@ -282,7 +282,7 @@ func incompleteMissingFields(item *models.Item) []string {
 func (s *Scanner) EnqueueIncompleteRescrape() (int, error) {
 	var items []models.Item
 	if err := db.DB.Select("id, name, type, poster, backdrop, people, overview, scrape_error").
-		Where("type IN ?", []string{"Movie", "Series"}).
+		Where("type IN ? AND duplicate_of = ''", []string{"Movie", "Series"}).
 		Order("updated_at DESC").Find(&items).Error; err != nil {
 		return 0, err
 	}

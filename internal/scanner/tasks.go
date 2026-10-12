@@ -239,8 +239,8 @@ func (s *Scanner) QueueScrape(itemID, query string, year int) (bool, error) {
 }
 
 func shouldQueueScrape(item *models.Item) bool {
-	if item == nil || item.ScrapeError != "" {
-		return false
+	if item == nil || item.ScrapeError != "" || item.DuplicateOf != "" {
+		return false // 重复条目不刮削：元数据由正主管辖
 	}
 	if !item.Scraped {
 		return true
@@ -264,7 +264,7 @@ func (s *Scanner) enqueueMissingMoviePosters() {
 		return
 	}
 	var items []models.Item
-	if err := db.DB.Select("id, poster").Where("type = ? AND scraped = ? AND scrape_error = ''", "Movie", true).Find(&items).Error; err != nil {
+	if err := db.DB.Select("id, poster").Where("type = ? AND scraped = ? AND scrape_error = '' AND duplicate_of = ''", "Movie", true).Find(&items).Error; err != nil {
 		logx.WarnC(logx.CatScrape, "检查缺失电影海报失败：%v", err)
 		return
 	}
@@ -359,21 +359,24 @@ func (s *Scanner) scrapeItemWithKeyword(ctx context.Context, itemID, query strin
                 }
         }
 	if query = strings.TrimSpace(query); query != "" {
-		item.Name = query
-		item.Year = queryYear
-		ids = map[string]string{} // 手动关键词要求重新搜索，而不是沿用旧 TMDB ID。
-		item.TmdbID, item.TmdbKind = "", ""
+	        item.Name = query
+	        item.Year = queryYear
+	        ids = map[string]string{} // 手动关键词要求重新搜索，而不是沿用旧 TMDB ID。
+	        item.TmdbID, item.TmdbKind = "", ""
 	}
-        if query == "" && item.Type == "Movie" {
-                reused, err := s.reuseScrapedMovieByTmdbID(&item)
-                if err != nil {
-                        return err
-                }
-                if reused {
-                        return nil
-                }
-        }
-        var err error
+	// 数据库层 TMDB 去重：同库同身份已有可见正主时直接并入，跳过重复刮削
+	if query == "" && item.TmdbID != "" {
+	        if c, ok := findVisibleCounterpart(&item); ok {
+	                if item.Type == "Series" {
+	                        mergeSeriesDuplicate(&item, c)
+	                } else {
+	                        hideDuplicate(item.ID, c.ID)
+	                }
+	                logx.TaskLog("scrape", "info", "《%s》与《%s》为同 TMDB 身份，已并入正主", item.Name, c.Name)
+	                return nil
+	        }
+	}
+	var err error
         switch item.Type {
         case "Movie":
                 err = s.scrapeMovie(ctx, &item, set, ids)
@@ -388,70 +391,9 @@ func (s *Scanner) scrapeItemWithKeyword(ctx context.Context, itemID, query strin
         return err
 }
 
-// reuseScrapedMovieByTmdbID 自动刮削时复用同 TMDB ID 的完整电影记录，避免重复请求 TMDB。
-func (s *Scanner) reuseScrapedMovieByTmdbID(item *models.Item) (bool, error) {
-        if item == nil || item.Type != "Movie" || strings.TrimSpace(item.TmdbID) == "" {
-                return false, nil
-        }
-        var candidates []models.Item
-        tmdbKind := strings.TrimSpace(item.TmdbKind)
-        if tmdbKind == "" {
-                tmdbKind = models.TmdbKindForItemType(item.Type)
-        }
-        if err := db.DB.
-                Where("type = ? AND tmdb_id = ? AND tmdb_kind = ? AND id <> ? AND scraped = ?", "Movie", item.TmdbID, tmdbKind, item.ID, true).
-                Order("date_created").Find(&candidates).Error; err != nil {
-                return false, err
-        }
-        for i := range candidates {
-                source := &candidates[i]
-                if strings.TrimSpace(source.Name) == "" || strings.TrimSpace(source.Overview) == "" || !hasImageFile(source.Poster) {
-                        continue
-                }
-                item.Name = source.Name
-                item.SortName = source.SortName
-                item.OriginalTitle = source.OriginalTitle
-                item.Overview = source.Overview
-                item.PremiereDate = source.PremiereDate
-                item.Year = source.Year
-                item.CommunityRating = source.CommunityRating
-                item.OfficialRating = source.OfficialRating
-                item.Genres = source.Genres
-                item.Studios = source.Studios
-                item.People = source.People
-                item.Tags = source.Tags
-                item.ProviderIDs = source.ProviderIDs
-                item.TmdbID = source.TmdbID
-                item.TmdbKind = source.TmdbKind
-                item.RunTimeTicks = source.RunTimeTicks
-                item.Poster, item.Thumb, item.Backdrop, item.Logo = source.Poster, source.Thumb, source.Backdrop, source.Logo
-                item.Poster = s.localizeTmdbImage(item, item.Poster)
-                item.Thumb = s.localizeTmdbImage(item, item.Thumb)
-                item.Backdrop = s.localizeTmdbImage(item, item.Backdrop)
-                item.Logo = s.localizeTmdbImage(item, item.Logo)
-                metadata := map[string]any{
-                        "tmdbId": item.TmdbID, "tmdbKind": item.TmdbKind, "name": item.Name,
-                        "originalTitle": item.OriginalTitle, "overview": item.Overview, "year": item.Year,
-                        "premiereDate": item.PremiereDate, "communityRating": item.CommunityRating,
-                        "officialRating": item.OfficialRating, "genres": rawJSONField(item.Genres),
-                        "studios": rawJSONField(item.Studios), "people": rawJSONField(item.People),
-                        "tags": rawJSONField(item.Tags), "providerIds": rawJSONField(item.ProviderIDs),
-                        "poster": item.Poster, "thumb": item.Thumb, "backdrop": item.Backdrop, "logo": item.Logo,
-                }
-                if err := s.writeTmdbMetadataFile(item, "version-"+item.ID+".json", metadata); err != nil {
-                        return false, err
-                }
-                item.ImageRev = source.ImageRev
-                item.Scraped = true
-                item.ScrapeError = ""
-                if err := db.DB.Save(item).Error; err != nil {
-                        return false, err
-                }
-                logx.TaskLog("scrape", "info", "复用同 TMDB ID=%s 的已刮削记录《%s》，跳过重复 TMDB 请求", item.TmdbID, item.Name)
-                return true, nil
-        }
-        return false, nil
-}
+// reuseScrapedMovieByTmdbID 已由数据库层 TMDB 去重取代：
+// scrapeItemWithKeyword 在刮削前发现同身份正主即直接并入（hideDuplicate/mergeSeriesDuplicate），
+// 不再复制元数据后保留两个可见条目。
 
 // tmdbFolderName 返回 TMDB 身份目录名。保留 movie/tv 命名空间，避免不同类型相同编号互相覆盖。
 func tmdbFolderName(item *models.Item) (string, error) {
@@ -785,13 +727,19 @@ func (s *Scanner) scrapeMovie(ctx context.Context, item *models.Item, set tmdb.S
 			}
 		}
 		imageErr := s.applyMovieDetail(ctx, item, detail, set)
+		merged := s.dedupeVisibility(item) // 落库前按 TMDB 身份归并，避免撞唯一索引
         if err := db.DB.Save(item).Error; err != nil {
                 return err
         }
-		if imageErr != nil {
-			logx.TaskLog("scrape", "error", "电影《%s》元数据已保存，但海报不可用：%v", item.Name, imageErr)
-			return imageErr
+		if merged {
+			logx.InfoC(logx.CatScrape, "电影《%s》与已有条目同 TMDB 身份，已并入正主展示", item.Name)
+			logx.TaskLog("scrape", "info", "电影《%s》与已有条目同 TMDB 身份，已并入正主展示", item.Name)
+			return nil
 		}
+        if imageErr != nil {
+                logx.TaskLog("scrape", "error", "电影《%s》元数据已保存，但海报不可用：%v", item.Name, imageErr)
+                return imageErr
+        }
         logx.InfoC(logx.CatScrape, "刮削电影《%s》(%d) 完成", item.Name, item.Year)
         logx.TaskLog("scrape", "info", "电影《%s》(%d) 刮削完成 · 评分 %.1f · 类型 %s · 海报=%v 背景=%v",
                 item.Name, item.Year, item.CommunityRating, item.Genres, item.Poster != "", item.Backdrop != "")
@@ -1304,9 +1252,16 @@ func (s *Scanner) scrapeSeries(ctx context.Context, item *models.Item, set tmdb.
                 }
         }
         item.ImageRev = imageRev(item.Poster, item.Backdrop)
+		merged := s.dedupeVisibility(item) // 落库前按 TMDB 身份归并，避免撞唯一索引
         if err := db.DB.Save(item).Error; err != nil {
                 return err
         }
+		if merged {
+			// 已并入正主：季集元数据由正主管辖，跳过重复请求
+			logx.InfoC(logx.CatScrape, "剧集《%s》与已有条目同 TMDB 身份，已并入正主展示", item.Name)
+			logx.TaskLog("scrape", "info", "剧集《%s》与已有条目同 TMDB 身份，已并入正主展示", item.Name)
+			return nil
+		}
         logx.InfoC(logx.CatScrape, "刮削剧集《%s》完成（共 %d 季）", item.Name, detail.NumberOfSeasons)
         logx.TaskLog("scrape", "info", "剧集《%s》刮削完成 · 共 %d 季 · 评分 %.1f · 海报=%v 背景=%v，继续刮削各季各集",
                 item.Name, detail.NumberOfSeasons, item.CommunityRating, item.Poster != "", item.Backdrop != "")
