@@ -949,28 +949,32 @@ func aiResultYearMatches(result tmdb.SearchResult, year int) bool {
 	return parseYear(result.ReleaseDate) == year || parseYear(result.FirstAirDate) == year
 }
 
+// aiResultTitleScore 标题相似度：按字段严格对齐匹配。TMDB（language=zh-CN）
+// 返回 title/name 为中文名、original_title/original_name 为外文原名，分别与
+// AI 关键词的 Title（中文）/OriginalTitle（原名）比较；不做跨字段交叉比较，
+// 避免 AI 中文标题与无关条目的外文原名（或反之）局部 token 重合造成误配。
+// AI 未提供对应字段时跳过该侧比较。
 func aiResultTitleScore(result tmdb.SearchResult, keywords *AIKeywords) float64 {
 	if keywords == nil {
 		return 0
 	}
-	expected := []string{keywords.Title, keywords.OriginalTitle}
-	actual := []string{result.Title, result.OriginalTitle, result.Name, result.OriginalName}
 	best := 0.0
-	for _, want := range expected {
+	consider := func(want, got string) {
 		want = strings.TrimSpace(want)
-		if want == "" {
-			continue
+		got = strings.TrimSpace(got)
+		if want == "" || got == "" {
+			return
 		}
-		for _, got := range actual {
-			got = strings.TrimSpace(got)
-			if got == "" {
-				continue
-			}
-			if score := searchTitleSimilarity(want, got); score > best {
-				best = score
-			}
+		if score := searchTitleSimilarity(want, got); score > best {
+			best = score
 		}
 	}
+	// 中文名 ↔ title / name
+	consider(keywords.Title, result.Title)
+	consider(keywords.Title, result.Name)
+	// 外文原名 ↔ original_title / original_name
+	consider(keywords.OriginalTitle, result.OriginalTitle)
+	consider(keywords.OriginalTitle, result.OriginalName)
 	return best
 }
 

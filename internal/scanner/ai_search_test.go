@@ -180,6 +180,39 @@ func TestAINonMovieSearchAllMiss(t *testing.T) {
 	}
 }
 
+// TestAIRresultTitleScoreFieldAligned 标题相似度按字段严格对齐：
+// 中文名 ↔ title，外文原名 ↔ original_title；跨字段重合不再计分。
+func TestAIRresultTitleScoreFieldAligned(t *testing.T) {
+	// 中文名对齐：AI 中文标题与 TMDB title 完全一致 → 100
+	kw := &AIKeywords{Title: "二十二", OriginalTitle: "Twenty Two"}
+	res := tmdb.SearchResult{Title: "二十二", OriginalTitle: "Twenty Two Days"}
+	if got := aiResultTitleScore(res, kw); got != 100 {
+		t.Fatalf("中文字段对齐应得 100, 实际 %v", got)
+	}
+
+	// 原名对齐：TMDB title 不是中文名（无翻译回退原名）时由原名侧命中
+	kw2 := &AIKeywords{Title: "二十二", OriginalTitle: "Twenty Two"}
+	res2 := tmdb.SearchResult{Title: "完全无关", OriginalTitle: "Twenty Two"}
+	if got := aiResultTitleScore(res2, kw2); got != 100 {
+		t.Fatalf("原名字段对齐应得 100, 实际 %v", got)
+	}
+
+	// 跨字段不得误配：AI 只填了外文名，TMDB 原名与之 token 重合也不计分
+	// （旧实现会拿 Title 与 original_title 交叉比较产生 70 分误配）
+	kw3 := &AIKeywords{Title: "Twenty Two"}
+	res3 := tmdb.SearchResult{Title: "二十二", OriginalTitle: "Twenty Two Days"}
+	if got := aiResultTitleScore(res3, kw3); got != 0 {
+		t.Fatalf("跨字段重合不应计分, 实际 %v", got)
+	}
+
+	// TV 结果用 name/original_name 对齐
+	kw4 := &AIKeywords{Title: "某剧", OriginalTitle: "Some Show"}
+	res4 := tmdb.SearchResult{Name: "某剧", OriginalName: "Some Show"}
+	if got := aiResultTitleScore(res4, kw4); got != 100 {
+		t.Fatalf("TV 字段对齐应得 100, 实际 %v", got)
+	}
+}
+
 func TestAISearchQueriesChineseFirst(t *testing.T) {
 	q := aiSearchQueries(testKeywords)
 	want := []string{"7号房的礼物", "Miracle in Cell No 7", "7号房的礼物 (Miracle in Cell No 7)"}
