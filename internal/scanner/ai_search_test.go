@@ -103,19 +103,33 @@ func TestBestEffortRequiresTitleScore(t *testing.T) {
 	}
 }
 
+// TestAISearchQueriesChineseFirst 查询顺序：中文名称优先，外文原名随后，组合第三。
+func TestAISearchQueriesChineseFirst(t *testing.T) {
+	q := aiSearchQueries(testKeywords)
+	want := []string{"7号房的礼物", "Miracle in Cell No 7", "7号房的礼物 (Miracle in Cell No 7)"}
+	if len(q) != len(want) {
+		t.Fatalf("查询数 = %d (%+v), 期望 %d", len(q), q, len(want))
+	}
+	for i := range want {
+		if q[i] != want[i] {
+			t.Fatalf("查询[%d] = %q, 期望 %q（中文优先）: %+v", i, q[i], want[i], q)
+		}
+	}
+}
+
 // TestSearchWithAIKeywordsStrictWinsOverFallback 多查询时严格命中优先：
-// 第一个查询只返回无日期结果（进兜底），第二个查询返回可严格命中的结果，
-// 最终应采用严格命中的。
+// 第一个查询（中文）只返回无日期结果（进兜底），第二个查询（外文原名）返回
+// 可严格命中的结果，最终应采用严格命中的。
 func TestSearchWithAIKeywordsStrictWinsOverFallback(t *testing.T) {
 	search := func(ctx context.Context, key, query, lang string, year int) ([]tmdb.SearchResult, error) {
-		if strings.Contains(query, "Miracle") { // 第一个查询
+		if strings.Contains(query, "7号房的礼物") && !strings.Contains(query, "Miracle") { // 第一个查询（中文）
 			return []tmdb.SearchResult{
 				{ID: 100, Title: "7号房的礼物", OriginalTitle: "7번방의 선물", ReleaseDate: ""},
 			}, nil
 		}
-		if strings.Contains(query, "7号房的礼物") { // 后续查询
+		if strings.Contains(query, "Miracle") { // 后续查询
 			return []tmdb.SearchResult{
-				{ID: 268467, Title: "7号房的礼物", OriginalTitle: "7번방의 선일",
+				{ID: 268467, Title: "7号房的礼物", OriginalTitle: "7번방의 선物",
 					ReleaseDate: "2013-01-23", PosterPath: "/a.jpg", VoteAverage: 8.2},
 			}, nil
 		}

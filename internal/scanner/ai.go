@@ -175,8 +175,10 @@ func aiTypeIsMovie(k *AIKeywords) bool {
 	return k != nil && strings.TrimSpace(k.Type) == "电影"
 }
 
-// aiSearchQueries 生成实际传给 TMDB 的查询词。年份不写入 query，而是作为
-// SearchMovie / SearchTV 的独立 year 参数传递。
+// aiSearchQueries 生成实际传给 TMDB 的查询词。优先使用中文名称搜索（国内媒体
+// 场景下 TMDB/镜像对中文标题的命中更直接），外文原名随后，最后尝试
+// 「中文 (原名)」组合。年份不写入 query，而是作为 SearchMovie / SearchTV
+// 的独立 year 参数传递。
 func aiSearchQueries(k *AIKeywords) []string {
 	if k == nil {
 		return nil
@@ -196,7 +198,7 @@ func aiSearchQueries(k *AIKeywords) []string {
 		queries = append(queries, q)
 	}
 
-	for _, name := range []string{original, title} {
+	for _, name := range []string{title, original} {
 		if name == "" {
 			continue
 		}
