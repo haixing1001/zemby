@@ -296,11 +296,15 @@ func (s *Scanner) scrapeWorker() {
                 }
                 ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 		err := s.scrapeItemWithKeyword(ctx, t.itemID, t.query, t.year)
-                cancel()
-                if err != nil {
-                        db.DB.Model(&models.Item{}).Where("id = ?", t.itemID).Update("scrape_error", truncateErr(err.Error()))
-                        logx.WarnC(logx.CatScrape, "刮削失败 item=%s: %v", t.itemID, err)
-                } else {
+		cancel()
+		if err != nil {
+		        // 清除失败刮削写入的 TMDB 身份（含 ProviderIDs 中的 Tmdb 键）：
+		        // 保留会让重试跳过搜索、直连同一个（可能错误的）条目，
+		        // 如《龙的传人》误刮成《失落神龙传说》后永远无法纠正。
+		        clearFailedTmdbIdentity(t.itemID)
+		        db.DB.Model(&models.Item{}).Where("id = ?", t.itemID).Update("scrape_error", truncateErr(err.Error()))
+		        logx.WarnC(logx.CatScrape, "刮削失败 item=%s: %v", t.itemID, err)
+		} else {
                         db.DB.Model(&models.Item{}).Where("id = ? AND scrape_error != ''", t.itemID).Update("scrape_error", "")
                 }
 		}()
@@ -313,6 +317,49 @@ func truncateErr(s string) string {
                 return s[:480]
         }
         return s
+}
+
+// clearFailedTmdbIdentity 刮削失败后清除条目上的 TMDB 身份：tmdb_id / tmdb_kind
+// 与 ProviderIDs 中的 Tmdb 键（其余键如 Imdb 保留）。失败刮削可能已把错误条目
+// 的身份写入条目，重试时会因此跳过搜索直连同一错误条目，永远无法纠正。
+func clearFailedTmdbIdentity(itemID string) {
+        var it models.Item
+        if err := db.DB.Select("id", "provider_ids").First(&it, "id = ?", itemID).Error; err != nil {
+                return
+        }
+        updates := map[string]any{"tmdb_id": "", "tmdb_kind": ""}
+        if it.ProviderIDs != "" {
+                var ids map[string]string
+                if json.Unmarshal([]byte(it.ProviderIDs), &ids) == nil && ids["Tmdb"] != "" {
+                        delete(ids, "Tmdb")
+                        if len(ids) == 0 {
+                                updates["provider_ids"] = ""
+                        } else if b, err := json.Marshal(ids); err == nil {
+                                updates["provider_ids"] = string(b)
+                        }
+                }
+        }
+        db.DB.Model(&models.Item{}).Where("id = ?", itemID).Updates(updates)
+}
+
+// rescrapeTitle 自动重刮（无手动关键词）时的搜索标题回退。已刮削过的条目，
+// 其名称可能已被上次（错误的）刮削结果覆盖——用污染名搜索会反复命中同一
+// 错误条目；此处回退文件路径解析出的原始标题与年份。未刮削过的条目名称
+// 来自文件名或 NFO，保持原样。
+func rescrapeTitle(it *models.Item) (string, int) {
+	if it == nil {
+		return "", 0
+	}
+	if it.Scraped && it.Path != "" {
+		if p := ParseName(filepath.Base(it.Path)); p.Title != "" {
+			year := it.Year
+			if p.Year > 0 {
+				year = p.Year
+			}
+			return p.Title, year
+		}
+	}
+	return it.Name, it.Year
 }
 
 // ScrapeNow 立即同步刮削某条目（供 API 调用）。
@@ -345,6 +392,15 @@ func (s *Scanner) scrapeItemWithKeyword(ctx context.Context, itemID, query strin
                 typeLabel = "电影"
         case "Series":
                 typeLabel = "剧集"
+        }
+        // 自动重刮回退：上次失败/误刮可能已把条目名覆盖为错误影片的标题
+        // （如《龙的传人》被误刮成《失落神龙传说》），用污染名搜索会反复命中
+        // 同一错误条目；回退文件路径解析出的原始标题与年份。手动关键词不回退。
+        if query == "" {
+                if name, year := rescrapeTitle(&item); name != item.Name || year != item.Year {
+                        logx.TaskLog("scrape", "info", "重刮回退原始文件名标题：「%s」(%d)", name, year)
+                        item.Name, item.Year = name, year
+                }
         }
         logx.TaskLog("scrape", "info", "开始刮削%s「%s」(%d) · %s", typeLabel, item.Name, item.Year, item.Path)
         // 已有 TMDB ID（NFO 提供）则直接获取详情
