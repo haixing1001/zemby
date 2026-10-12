@@ -649,12 +649,14 @@ func (s *Scanner) scrapeMovie(ctx context.Context, item *models.Item, set tmdb.S
                                         logx.TaskLog("scrape", "warn", "AI 关键词 TMDB 搜索失败，回退原文件名搜索：%v", searchErr)
                                 }
                                 if searchErr == nil && !aiTypeIsMovie(keywords) {
-                                        if len(found) == 0 {
-                                                return fmt.Errorf("AI 判定为非电影，但 TMDB TV 未找到匹配: %s (%d)", keywords.Title, keywords.Year)
+                                        tvID, movieRes, terr := s.aiNonMovieSearch(ctx, set, keywords, found, matchYear, tmdb.SearchMovie)
+                                        if terr != nil {
+                                                return terr
                                         }
-                                        best := bestTVResult(found, matchYear)
-                                        logx.TaskLog("scrape", "info", "AI 命中 TV《%s》(首播 %s) TmdbID=%d", best.Name, best.FirstAirDate, best.ID)
-                                        return s.scrapeSeries(ctx, item, set, map[string]string{"Tmdb": fmt.Sprint(best.ID)})
+                                        if tvID != "" {
+                                                return s.scrapeSeries(ctx, item, set, map[string]string{"Tmdb": tvID})
+                                        }
+                                        found = movieRes // TV 无命中但电影搜索命中：按电影继续
                                 }
                                 if searchErr == nil {
                                         results = found
@@ -709,14 +711,16 @@ func (s *Scanner) scrapeMovie(ctx context.Context, item *models.Item, set tmdb.S
                                 if err != nil {
                                         return err
                                 }
-				if !aiTypeIsMovie(keywords) {
-					if len(results) == 0 {
-						return fmt.Errorf("AI 判定为非电影，但 TMDB TV 未找到匹配: %s (%d)", keywords.Title, keywords.Year)
-					}
-					best := bestTVResult(results, matchYear)
-					logx.TaskLog("scrape", "info", "AI 命中 TV《%s》(首播 %s) TmdbID=%d", best.Name, best.FirstAirDate, best.ID)
-					return s.scrapeSeries(ctx, item, set, map[string]string{"Tmdb": fmt.Sprint(best.ID)})
-				}
+                                if !aiTypeIsMovie(keywords) {
+                                        tvID, movieRes, terr := s.aiNonMovieSearch(ctx, set, keywords, results, matchYear, tmdb.SearchMovie)
+                                        if terr != nil {
+                                                return terr
+                                        }
+                                        if tvID != "" {
+                                                return s.scrapeSeries(ctx, item, set, map[string]string{"Tmdb": tvID})
+                                        }
+                                        results = movieRes // TV 无命中但电影搜索命中：按电影继续
+                                }
                         }
                         }
                 }
@@ -818,6 +822,34 @@ func searchWithAIKeywords(ctx context.Context, key, lang string, keywords *AIKey
 		}
 	}
 	return fallback, nil
+}
+
+// aiNonMovieSearch 处理 AI 判定为非电影类型的搜索结果：
+//   - TV 命中 → 返回 TV 条目的 TMDB ID（调用方转剧集刮削）；
+//   - TV 无命中 → 降级用电影搜索 AI 关键词。AI 判定的类型可能与 TMDB 归类
+//     不一致（如纪录片电影在 TMDB 属于 movie），命中则返回电影搜索结果，
+//     由调用方按电影流程继续；
+//   - 两者都无命中才报错。
+// movieSearch 参数便于测试注入。
+func (s *Scanner) aiNonMovieSearch(ctx context.Context, set tmdb.Settings, keywords *AIKeywords,
+	tvFound []tmdb.SearchResult, matchYear int,
+	movieSearch func(context.Context, string, string, string, int) ([]tmdb.SearchResult, error)) (string, []tmdb.SearchResult, error) {
+	if len(tvFound) > 0 {
+		best := bestTVResult(tvFound, matchYear)
+		logx.TaskLog("scrape", "info", "AI 命中 TV《%s》(首播 %s) TmdbID=%d", best.Name, best.FirstAirDate, best.ID)
+		return fmt.Sprint(best.ID), nil, nil
+	}
+	logx.TaskLog("scrape", "info", "AI 判定「%s」按 TV 搜索无命中，降级电影搜索：「%s」(%d)",
+		keywords.Type, keywords.Title, keywords.Year)
+	movieResults, err := searchWithAIKeywords(ctx, set.APIKey, set.Language, keywords, movieSearch)
+	if err != nil {
+		return "", nil, err
+	}
+	if len(movieResults) == 0 {
+		return "", nil, fmt.Errorf("AI 判定为「%s」，TMDB TV 与电影搜索均无匹配: %s (%d)",
+			keywords.Type, keywords.Title, keywords.Year)
+	}
+	return "", movieResults, nil
 }
 
 type aiScoredResult struct {

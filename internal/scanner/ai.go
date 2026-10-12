@@ -170,9 +170,22 @@ type AIKeywords struct {
 	Type          string `json:"type"`           // 视频类型（电影/电视剧/综艺/纪录片等，仅供参考）
 }
 
-// aiTypeIsMovie AI 明确返回“电影”时才按电影处理；空值或其他类型都改用 TV 搜索。
+// aiTypeIsMovie AI 判定按电影搜索的类型。TMDB 中纪录片、短片属于电影（纪录片
+// 是 movie 的 genre，没有独立的 TV 分类），含「电影」字样的类型同理；
+// 其余类型（电视剧、综艺、动画等）与空值都改用 TV 搜索（TV 无命中时另有
+// 电影降级，见 aiNonMovieSearch）。
 func aiTypeIsMovie(k *AIKeywords) bool {
-	return k != nil && strings.TrimSpace(k.Type) == "电影"
+	if k == nil {
+		return false
+	}
+	t := strings.TrimSpace(k.Type)
+	if t == "" {
+		return false
+	}
+	if strings.Contains(t, "电影") { // 电影 / 动画电影 / 纪录电影 等
+		return true
+	}
+	return strings.Contains(t, "纪录片") || strings.Contains(t, "纪录") || t == "短片"
 }
 
 // aiSearchQueries 生成实际传给 TMDB 的查询词。优先使用中文名称搜索（国内媒体

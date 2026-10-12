@@ -103,7 +103,83 @@ func TestBestEffortRequiresTitleScore(t *testing.T) {
 	}
 }
 
-// TestAISearchQueriesChineseFirst 查询顺序：中文名称优先，外文原名随后，组合第三。
+// TestAITypeIsMovie 类型映射：纪录片/短片在 TMDB 属于电影；电视剧、综艺、
+// 动画与空值走 TV 搜索（用户场景：《二十二》纪录片电影被误判走 TV 而失败）。
+func TestAITypeIsMovie(t *testing.T) {
+	cases := []struct {
+		typ  string
+		want bool
+	}{
+		{"电影", true},
+		{"纪录片", true},
+		{"纪录片电影", true},
+		{"纪录", true},
+		{"短片", true},
+		{"动画电影", true},
+		{"电视剧", false},
+		{"综艺", false},
+		{"动画", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := aiTypeIsMovie(&AIKeywords{Title: "x", Type: c.typ}); got != c.want {
+			t.Errorf("aiTypeIsMovie(Type=%q) = %v, 期望 %v", c.typ, got, c.want)
+		}
+	}
+	if aiTypeIsMovie(nil) {
+		t.Error("nil 关键词应按 TV 处理")
+	}
+}
+
+// TestAINonMovieSearchTVHit TV 命中：直接返回 TV 的 TMDB ID，不触发降级。
+func TestAINonMovieSearchTVHit(t *testing.T) {
+	s := &Scanner{}
+	set := tmdb.Settings{APIKey: "k", Language: "zh-CN"}
+	kw := &AIKeywords{Title: "某剧", Year: 2020, Type: "综艺"}
+	tv := []tmdb.SearchResult{{ID: 555, Name: "某剧", FirstAirDate: "2020-01-01"}}
+	tvID, movieRes, err := s.aiNonMovieSearch(context.Background(), set, kw, tv, 2020, tmdb.SearchMovie)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tvID != "555" || movieRes != nil {
+		t.Fatalf("TV 命中应返回 tvID=555, 实际 tvID=%q movieRes=%+v", tvID, movieRes)
+	}
+}
+
+// TestAINonMovieSearchFallsBackToMovie TV 无命中时降级电影搜索：
+// 纪录片电影被 AI 判为非电影类型的兜底路径。
+func TestAINonMovieSearchFallsBackToMovie(t *testing.T) {
+	s := &Scanner{}
+	set := tmdb.Settings{APIKey: "k", Language: "zh-CN"}
+	kw := &AIKeywords{Title: "二十二", OriginalTitle: "Twenty Two", Year: 2015, Type: "综艺"}
+	movieSearch := func(ctx context.Context, key, query, lang string, year int) ([]tmdb.SearchResult, error) {
+		return []tmdb.SearchResult{
+			{ID: 268, Title: "二十二", OriginalTitle: "Twenty Two", ReleaseDate: "2015-05-22", PosterPath: "/a.jpg", VoteAverage: 8.9},
+		}, nil
+	}
+	tvID, movieRes, err := s.aiNonMovieSearch(context.Background(), set, kw, nil, 2015, movieSearch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tvID != "" || len(movieRes) != 1 || movieRes[0].ID != 268 {
+		t.Fatalf("TV 无命中应降级电影搜索并返回结果, 实际 tvID=%q movieRes=%+v", tvID, movieRes)
+	}
+}
+
+// TestAINonMovieSearchAllMiss TV 与电影都无命中：报错信息包含两类搜索。
+func TestAINonMovieSearchAllMiss(t *testing.T) {
+	s := &Scanner{}
+	set := tmdb.Settings{APIKey: "k", Language: "zh-CN"}
+	kw := &AIKeywords{Title: "不存在的作品", Year: 2050, Type: "综艺"}
+	movieSearch := func(ctx context.Context, key, query, lang string, year int) ([]tmdb.SearchResult, error) {
+		return nil, nil
+	}
+	_, _, err := s.aiNonMovieSearch(context.Background(), set, kw, nil, 2050, movieSearch)
+	if err == nil || !strings.Contains(err.Error(), "TV 与电影搜索均无匹配") {
+		t.Fatalf("两类搜索都无命中应报错, 实际: %v", err)
+	}
+}
+
 func TestAISearchQueriesChineseFirst(t *testing.T) {
 	q := aiSearchQueries(testKeywords)
 	want := []string{"7号房的礼物", "Miracle in Cell No 7", "7号房的礼物 (Miracle in Cell No 7)"}
