@@ -115,8 +115,19 @@ const broken = ref(false)
 const selectedSourceId = ref('')
 const selectedSourcePath = computed(() => {
   const src = playbackSources.value.find(source => String(source.Id) === String(selectedSourceId.value))
-  return src?.Path || playbackSources.value[0]?.Path || ''
+  return prettyPath(src?.Path || playbackSources.value[0]?.Path || '')
 })
+// 视频地址显示：http(s) 直链做 URL 解码（网盘直链常为百分号编码的中文与符号），
+// 本地路径原样；解码遇到无效序列时回退原文。
+function prettyPath(p) {
+  if (!p) return ''
+  if (!/^https?:\/\//i.test(p)) return p
+  try {
+    return decodeURIComponent(p)
+  } catch {
+    return p
+  }
+}
 const relatedItems = ref([])
 const brokenRelatedImages = ref(new Set())
 const seasons = ref([])
