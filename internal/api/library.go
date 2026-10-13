@@ -66,6 +66,8 @@ func (a *App) adminRoute(w http.ResponseWriter, r *http.Request, p string, parts
                 case len(parts) == 4 && parts[0] == "admin" && parts[1] == "libraries":
                         lid := parts[2]
                         switch parts[3] {
+                        case "rescrape":
+                                a.adminLibraryRescrape(w, r, lid)
                         case "poster":
                                 a.adminLibraryPoster(w, r, lid)
                         case "cover":

@@ -125,6 +125,57 @@ func TestNeedsProbeRemoteSwitch(t *testing.T) {
 	}
 }
 
+// TestRescrapeLibrary 按库重新刮削：可见条目全部入队（含已刮削/带失败标记），
+// 软隐藏与集排除，失败标记清空，任务带 manual（强制重新搜索）。
+func TestRescrapeLibrary(t *testing.T) {
+	d := setupDedupeDB(t)
+	if err := d.Create(&models.Library{ID: "libA", Name: "A", Path: "/a", Type: "movies"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Create(&models.Library{ID: "libB", Name: "B", Path: "/b", Type: "movies"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	mk := func(id, lib, dup, errMsg string) {
+		it := models.Item{ID: id, LibraryID: lib, Type: "Movie", Name: id,
+			ScrapeError: errMsg, DuplicateOf: dup, Path: "/" + id,
+			DateCreated: time.Now(), UpdatedAt: time.Now()}
+		if err := d.Create(&it).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk("a1", "libA", "", "")
+	mk("a2", "libA", "", "旧失败") // 带失败标记也应入队并清标记
+	mk("a3", "libA", "a1", "")   // 软隐藏不入队
+	mk("b1", "libB", "", "")
+	if err := d.Create(&models.Item{ID: "a4", LibraryID: "libA", Type: "Episode", Name: "ep",
+		Path: "/a4", DateCreated: time.Now(), UpdatedAt: time.Now()}).Error; err != nil {
+		t.Fatal(err) // 集不入队
+	}
+
+	s := &Scanner{scrapeQueue: newScrapeTaskQueue()}
+	n, err := s.RescrapeLibrary("libA")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 || s.QueueLen() != 2 {
+		t.Fatalf("应入队 libA 的 2 个可见条目, 实际 n=%d len=%d", n, s.QueueLen())
+	}
+	// 失败标记被清空
+	var errCnt int64
+	d.Model(&models.Item{}).Where("id = ? AND scrape_error != ''", "a2").Count(&errCnt)
+	if errCnt != 0 {
+		t.Fatal("重新刮削入队应清除历史失败标记")
+	}
+	// 任务标记 manual（强制重新搜索）
+	t1 := s.scrapeQueue.Pop()
+	if t1.itemID != "a1" || !t1.manual {
+		t.Fatalf("任务应为 manual 强制重搜: %+v", t1)
+	}
+	if _, err := s.RescrapeLibrary("missing"); err == nil {
+		t.Fatal("不存在的库应报错")
+	}
+}
+
 // TestFanrenXiuxianzhuanIngestion 复现用户场景：剧集库
 // 「我的视频/剧集/凡人修仙传 (2020)/Season 1/」下 6 个
 // S01E001-S01E006 的 .strm 文件，验证剧集/季/集是否正常入库。

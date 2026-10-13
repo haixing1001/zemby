@@ -316,6 +316,37 @@ func (s *Scanner) EnqueueIncompleteRescrape() (int, error) {
 	return n, nil
 }
 
+// RescrapeLibrary 把指定媒体库的全部可见电影/剧集条目加入重新刮削队列。
+// 任务标记为手动：忽略既有 TMDB 身份强制重新搜索（错配纠正场景），刮削
+// 总开关关闭时仍执行；入队前清除历史失败标记。
+func (s *Scanner) RescrapeLibrary(libID string) (int, error) {
+	var lib models.Library
+	if err := db.DB.First(&lib, "id = ?", libID).Error; err != nil {
+		return 0, fmt.Errorf("媒体库不存在")
+	}
+	var ids []string
+	if err := db.DB.Model(&models.Item{}).
+		Where("library_id = ? AND type IN ? AND duplicate_of = ''", lib.ID, []string{"Movie", "Series"}).
+		Pluck("id", &ids).Error; err != nil {
+		return 0, err
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	db.DB.Model(&models.Item{}).Where("id IN ?", ids).Update("scrape_error", "")
+	n := 0
+	for _, id := range ids {
+		if s.enqueueScrapeTask(scrapeTask{itemID: id, manual: true}) {
+			n++
+		}
+	}
+	if n > 0 {
+		SetScrapeState("running")
+		logx.InfoC(logx.CatScrape, "媒体库「%s」重新刮削：%d 个条目入队（强制重新搜索）", lib.Name, n)
+	}
+	return n, nil
+}
+
 // incompleteItemIDs 信息不全条目 ID 列表（IncompleteItems 与一键清除元数据
 // 共用同一判定标准）。
 func incompleteItemIDs() ([]string, error) {

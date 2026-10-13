@@ -135,6 +135,7 @@ export const api = {
     libraryPosterUrl: (id) => `${BASE}/admin/libraries/${id}/poster?api_key=${encodeURIComponent(state.token)}`,
     scan: (id, mode) => api.post('/admin/scan', { ID: id, Mode: mode }),
     scanAll: (mode) => api.post('/admin/scan', { Mode: mode }),
+    libraryRescrape: (id) => api.post(`/admin/libraries/${id}/rescrape`, {}),
     scanStop: () => api.post('/admin/scan-stop', {}),
     scanStatus: () => api.get('/admin/scan-status'),
     tmdb: () => api.get('/admin/tmdb'),

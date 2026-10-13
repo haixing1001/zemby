@@ -44,6 +44,7 @@
         <div class="menu-pop" v-if="openMenu === lib.ID">
           <div class="mi" @click="doScan(lib, 'full')"><span class="ico" v-html="ic.scan"></span>全量扫描</div>
           <div class="mi" @click="doScan(lib, 'update')"><span class="ico" v-html="ic.refresh"></span>刷新扫描</div>
+          <div class="mi" @click="rescrapeLib(lib)"><span class="ico" v-html="ic.refresh"></span>重新刮削</div>
           <div class="mi" @click="addFolder(lib)"><span class="ico" v-html="ic.folder"></span>添加媒体文件夹</div>
           <div class="mi" @click="insertCover(lib)"><span class="ico" v-html="ic.img"></span>插入媒体封面</div>
           <div class="mi" @click="genCover(lib)"><span class="ico" v-html="ic.img"></span>生成封面</div>
@@ -168,6 +169,15 @@ async function doScan(lib, mode) {
     await api.admin.scan(lib.ID, mode)
     toast(mode === 'full' ? `「${lib.Name}」全量扫描已开始` : `「${lib.Name}」刷新扫描已开始`)
     setTimeout(load, 600)
+  } catch (e) { toast(errText(e), true) }
+}
+async function rescrapeLib(lib) {
+  const total = lib.ItemCount || 0
+  if (!confirm(`将把「${lib.Name}」库内全部条目（含已刮削的）加入重新刮削队列：忽略既有 TMDB 匹配强制重新搜索（用于错配纠正），库大时会产生较多 TMDB 请求。继续？`)) return
+  try {
+    const r = await api.admin.libraryRescrape(lib.ID)
+    toast(`「${lib.Name}」重新刮削已入队 ${r.Queued ?? 0} 个条目`)
+    openMenu.value = ''
   } catch (e) { toast(errText(e), true) }
 }
 async function scanAll(mode) {

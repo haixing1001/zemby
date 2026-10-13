@@ -557,6 +557,20 @@ func (a *App) adminScrapeIncompleteRetry(w http.ResponseWriter, r *http.Request)
 // 媒体信息提取
 // ============================================================
 
+// adminLibraryRescrape 重新刮削指定媒体库的全部条目（强制重新搜索）。
+func (a *App) adminLibraryRescrape(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		a.fail(w, 405, "方法不支持")
+		return
+	}
+	n, err := a.scanner.RescrapeLibrary(strings.ToLower(id))
+	if err != nil {
+		a.fail(w, 404, err.Error())
+		return
+	}
+	a.json(w, 200, M{"OK": true, "Queued": n})
+}
+
 // adminProbeConfig 提取配置读写。
 func (a *App) adminProbeConfig(w http.ResponseWriter, r *http.Request) {
         if r.Method == http.MethodGet {
