@@ -302,13 +302,42 @@ func (a *App) queryItems(q *itemQuery) ([]models.Item, int) {
                 a.db.Model(&models.UserDatum{}).Where("user_id = ? AND favorite = ?", q.UserID, true).Select("item_id").Scan(&ids)
                 dbq = dbq.Where("id IN ?", orEmpty(ids))
         }
-        // Resume 模式：只展示电影。剧集的集不逐集出现（继续看剧走剧集详情页），
-        // 避免同一部剧的多集进度把继续观看刷屏。
+        // Resume 模式（继续观看）：电影按进度逐条展示；剧集不逐集刷屏，
+        // 每部剧只保留最近观看的一集，由前端显示为剧集名 + 集号。
         if q.Resume {
-                var ids []string
-                a.db.Model(&models.UserDatum{}).Where("user_id = ? AND position_ticks > 0 AND played = ?", q.UserID, false).Select("item_id").Scan(&ids)
-                dbq = dbq.Where("id IN ?", orEmpty(ids))
-                dbq = dbq.Where("type = ?", "Movie")
+                var uds []models.UserDatum
+                a.db.Where("user_id = ? AND position_ticks > 0 AND played = ?", q.UserID, false).
+                        Order("last_played_date DESC").Limit(500).Find(&uds)
+                candIDs := make([]string, 0, len(uds))
+                for i := range uds {
+                        candIDs = append(candIDs, uds[i].ItemID)
+                }
+                var cands []models.Item
+                a.db.Where("id IN ? AND duplicate_of = ''", orEmpty(candIDs)).Find(&cands)
+                info := make(map[string]models.Item, len(cands))
+                for i := range cands {
+                        info[cands[i].ID] = cands[i]
+                }
+                allowed := make([]string, 0, len(uds))
+                seenSeries := map[string]bool{}
+                for i := range uds { // 已按最近播放倒序：首见即该剧最近的一集
+                        it, ok := info[uds[i].ItemID]
+                        if !ok {
+                                continue
+                        }
+                        switch it.Type {
+                        case "Movie":
+                                allowed = append(allowed, it.ID)
+                        case "Episode":
+                                if it.SeriesID == "" || seenSeries[it.SeriesID] {
+                                        continue
+                                }
+                                seenSeries[it.SeriesID] = true
+                                allowed = append(allowed, it.ID)
+                        }
+                }
+                dbq = dbq.Where("id IN ?", orEmpty(allowed))
+                dbq = dbq.Where("type IN ?", []string{"Movie", "Episode"})
         }
 
         // 计数

@@ -161,8 +161,8 @@ func (a *App) adminDashboard(w http.ResponseWriter, r *http.Request) {
         }
 
         // 刮削/提取任务计数
-		scrapePending := scanner.ScrapePendingCount()
-		scrapeFailed := scanner.ScrapeFailedCount()
+        	scrapePending := scanner.ScrapeUnscrapedCount() // 库内未刮削条目（整体进度）
+        	scrapeFailed := scanner.ScrapeFailedCount()
 
         uptime := time.Since(procStart)
         dur := func(d time.Duration) string {
@@ -422,7 +422,7 @@ func (a *App) adminScrapeConfig(w http.ResponseWriter, r *http.Request) {
 
 // adminScrapeState 刮削任务状态。
 func (a *App) adminScrapeState(w http.ResponseWriter, r *http.Request) {
-	pending := scanner.ScrapePendingCount()
+	pending := int64(a.scanner.QueueLen()) // 队列实时排队数（含手动重刮等已刮削条目的任务）
 	failed := scanner.ScrapeFailedCount()
         a.json(w, 200, M{
                 "State": scanner.GetScrapeState(), "Pending": pending, "Failed": failed,

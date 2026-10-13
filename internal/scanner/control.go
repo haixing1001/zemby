@@ -150,6 +150,22 @@ func GetScrapeState() string {
         return scrapeState
 }
 
+// markScrapeIdleIfDone 队列已清空时把「运行中」归位为「空闲」。
+// waiting 为原子读：与 Push 路径（先入队后 SetScrapeState("running")）天然互斥，
+// 不会把刚入队任务的 running 状态误覆盖为 idle。
+func (s *Scanner) markScrapeIdleIfDone() {
+	scrapeStateMu.Lock()
+	defer scrapeStateMu.Unlock()
+	if scrapeState == "running" && s.scrapeQueue.Len() == 0 {
+		scrapeState = "idle"
+	}
+}
+
+// QueueLen 刮削队列中排队任务数（当前任务的真实待处理量）。
+func (s *Scanner) QueueLen() int {
+	return s.scrapeQueue.Len()
+}
+
 // EnqueueAllUnscraped 将所有未刮削条目入队，返回入队数量。
 func (s *Scanner) EnqueueAllUnscraped() int {
         var ids []string
@@ -172,9 +188,8 @@ func (s *Scanner) EnqueueAllUnscraped() int {
 
 // DrainScrape 清空刮削队列，返回丢弃数量。
 func (s *Scanner) DrainScrape() int {
-	n := s.scrapeQueue.Drain()
-	probeWaiting.Add(-int64(n))
-	return n
+	// 计数由队列内部的 waiting 维护，无需再借用 probeWaiting
+	return s.scrapeQueue.Drain()
 }
 
 // RetryFailedScrape 重试全部失败条目：清除错误标记并入队。
@@ -347,22 +362,22 @@ func hasActorMetadata(raw string) bool {
 	return false
 }
 
-// ScrapePendingCount includes movies whose metadata is marked scraped but whose
-// poster is missing, when image downloads are enabled.
-func ScrapePendingCount() int64 {
-	query := db.DB.Model(&models.Item{}).Where("type IN ? AND scraped = ?", []string{"Movie", "Series"}, false)
+// ScrapeUnscrapedCount 库内未刮削条目数（控制台的媒体库整体进度统计，
+// 与刮削管理页的「当前任务队列长度」是两个口径）。
+func ScrapeUnscrapedCount() int64 {
+	query := db.DB.Model(&models.Item{}).Where("type IN ? AND scraped = ? AND duplicate_of = ''", []string{"Movie", "Series"}, false)
 	if tmdb.LoadSettings().DownloadImgs {
-		query = db.DB.Model(&models.Item{}).Where("type IN ? AND (scraped = ? OR (type = 'Movie' AND poster = '' AND scrape_error = ''))", []string{"Movie", "Series"}, false)
+		query = db.DB.Model(&models.Item{}).Where("type IN ? AND (scraped = ? OR (type = 'Movie' AND poster = '' AND scrape_error = '')) AND duplicate_of = ''", []string{"Movie", "Series"}, false)
 	}
 	var count int64
 	query.Count(&count)
 	return count
 }
 
-// ScrapeFailedCount includes image download failures from otherwise successful metadata scrapes.
+// ScrapeFailedCount 失败条目数（与失败清单同一口径：排除软隐藏的重复条目）。
 func ScrapeFailedCount() int64 {
 	var count int64
-	db.DB.Model(&models.Item{}).Where("type IN ? AND scrape_error != ''", []string{"Movie", "Series"}).Count(&count)
+	db.DB.Model(&models.Item{}).Where("type IN ? AND scrape_error != '' AND duplicate_of = ''", []string{"Movie", "Series"}).Count(&count)
 	return count
 }
 

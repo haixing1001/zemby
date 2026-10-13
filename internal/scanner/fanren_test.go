@@ -5,9 +5,77 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"go-emby/internal/models"
 )
+
+// TestScrapeQueueLenAndIdleState 刮削任务状态修复的回归：
+// 队列计数（Push/Pop/Drain）与「队列清空后 running 自动归位 idle」。
+func TestScrapeQueueLenAndIdleState(t *testing.T) {
+	setupDedupeDB(t)
+	q := newScrapeTaskQueue()
+	if q.Len() != 0 {
+		t.Fatalf("初始队列长度应为 0, 实际 %d", q.Len())
+	}
+	q.Push(scrapeTask{itemID: "a"})
+	q.Push(scrapeTask{itemID: "b"})
+	q.Push(scrapeTask{itemID: "c"})
+	if q.Len() != 3 {
+		t.Fatalf("入队后应为 3, 实际 %d", q.Len())
+	}
+	if got := q.Pop(); got.itemID != "a" {
+		t.Fatalf("FIFO 顺序错误: %q", got.itemID)
+	}
+	if q.Len() != 2 {
+		t.Fatalf("取出后应为 2, 实际 %d", q.Len())
+	}
+	if n := q.Drain(); n != 2 || q.Len() != 0 {
+		t.Fatalf("清空应移除 2 并归零, 实际 n=%d len=%d", n, q.Len())
+	}
+
+	s := &Scanner{scrapeQueue: q}
+	// 队列空 + running → 自动归位 idle
+	SetScrapeState("running")
+	s.markScrapeIdleIfDone()
+	if GetScrapeState() != "idle" {
+		t.Fatalf("队列清空后应归位 idle, 实际 %s", GetScrapeState())
+	}
+	// 队列有任务 + running → 保持 running
+	SetScrapeState("running")
+	q.Push(scrapeTask{itemID: "x"})
+	s.markScrapeIdleIfDone()
+	if GetScrapeState() != "running" {
+		t.Fatal("队列有任务时不应归位 idle")
+	}
+	q.Pop()
+	// paused 状态不被归位
+	SetScrapeState("paused")
+	s.markScrapeIdleIfDone()
+	if GetScrapeState() != "paused" {
+		t.Fatal("paused 状态不应被改动")
+	}
+	SetScrapeState("idle")
+}
+
+// TestScrapeFailedCountExcludesDuplicates 失败计数与失败清单同口径：
+// 排除软隐藏的重复条目。
+func TestScrapeFailedCountExcludesDuplicates(t *testing.T) {
+	d := setupDedupeDB(t)
+	mk := func(id, dup string) {
+		it := models.Item{ID: id, LibraryID: "lib1", Type: "Movie", Name: id,
+			ScrapeError: "x", DuplicateOf: dup, Path: "/m/" + id,
+			DateCreated: time.Now(), UpdatedAt: time.Now()}
+		if err := d.Create(&it).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk("v1", "")
+	mk("h1", "v1")
+	if got := ScrapeFailedCount(); got != 1 {
+		t.Fatalf("失败计数应排除软隐藏条目, 实际 %d", got)
+	}
+}
 
 // TestFanrenXiuxianzhuanIngestion 复现用户场景：剧集库
 // 「我的视频/剧集/凡人修仙传 (2020)/Season 1/」下 6 个

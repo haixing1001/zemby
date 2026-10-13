@@ -198,11 +198,11 @@ func (s *Scanner) enqueueScrape(itemID string) bool {
 }
 
 func (s *Scanner) enqueueScrapeTask(task scrapeTask) bool {
-	probeWaiting.Add(1)
+	// 计数在队列内部维护（waiting），不再借用探测队列的 probeWaiting，
+	// 避免刮削任务把「媒体信息提取」页的等待计数顶高。
 	if !s.scrapeQueue.Push(task) {
-                probeWaiting.Add(-1)
 		return false
-        }
+	}
 	return true
 }
 
@@ -283,7 +283,6 @@ func (s *Scanner) enqueueMissingMoviePosters() {
 func (s *Scanner) scrapeWorker() {
 	for {
 		t := s.scrapeQueue.Pop()
-                probeWaiting.Add(-1)
 		func() {
 			defer s.scrapeQueue.Done(t.itemID)
                 waitWhilePaused()
@@ -291,24 +290,25 @@ func (s *Scanner) scrapeWorker() {
 			if !cfg.Enabled && !t.manual {
 				return // 刮削总开关关闭：丢弃任务
                 }
-			if !LoadEnhanceConfig().TMDB && !t.manual {
-				return // 增强功能「启动TMDB」关闭：静默跳过（开启后可重新批量刮削）
+                if !LoadEnhanceConfig().TMDB && !t.manual {
+			return // 增强功能「启动TMDB」关闭：静默跳过（开启后可重新批量刮削）
                 }
                 ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 		err := s.scrapeItemWithKeyword(ctx, t.itemID, t.query, t.year, t.manual && t.query == "")
 		cancel()
 		if err != nil {
-		        // 清除失败刮削写入的 TMDB 身份（含 ProviderIDs 中的 Tmdb 键）：
-		        // 保留会让重试跳过搜索、直连同一个（可能错误的）条目，
-		        // 如《龙的传人》误刮成《失落神龙传说》后永远无法纠正。
-		        clearFailedTmdbIdentity(t.itemID)
-		        db.DB.Model(&models.Item{}).Where("id = ?", t.itemID).Update("scrape_error", truncateErr(err.Error()))
-		        logx.WarnC(logx.CatScrape, "刮削失败 item=%s: %v", t.itemID, err)
+			// 清除失败刮削写入的 TMDB 身份（含 ProviderIDs 中的 Tmdb 键）：
+			// 保留会让重试跳过搜索、直连同一个（可能错误的）条目，
+			// 如《龙的传人》误刮成《失落神龙传说》后永远无法纠正。
+			clearFailedTmdbIdentity(t.itemID)
+			db.DB.Model(&models.Item{}).Where("id = ?", t.itemID).Update("scrape_error", truncateErr(err.Error()))
+			logx.WarnC(logx.CatScrape, "刮削失败 item=%s: %v", t.itemID, err)
 		} else {
-                        db.DB.Model(&models.Item{}).Where("id = ? AND scrape_error != ''", t.itemID).Update("scrape_error", "")
-                }
+			db.DB.Model(&models.Item{}).Where("id = ? AND scrape_error != ''", t.itemID).Update("scrape_error", "")
+		}
 		}()
-        }
+		s.markScrapeIdleIfDone()
+	}
 }
 
 // truncateErr 错误信息截断。

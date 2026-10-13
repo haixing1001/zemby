@@ -1,6 +1,7 @@
 package scanner
 
 import "sync"
+import "sync/atomic"
 
 // scrapeTaskQueue is an in-memory, unbounded FIFO. A bounded channel silently
 // lost scrape jobs when a large library filled the 4096-entry buffer.
@@ -10,6 +11,7 @@ type scrapeTaskQueue struct {
 	tasks   []scrapeTask
 	head    int
 	pending map[string]struct{}
+	waiting atomic.Int64 // 队列中排队任务数（原子读，供任务状态展示，避免锁序冲突）
 }
 
 func newScrapeTaskQueue() *scrapeTaskQueue {
@@ -17,6 +19,9 @@ func newScrapeTaskQueue() *scrapeTaskQueue {
 	q.ready = sync.NewCond(&q.mu)
 	return q
 }
+
+// Len 队列中排队任务数（不含正在处理的）。
+func (q *scrapeTaskQueue) Len() int { return int(q.waiting.Load()) }
 
 func (q *scrapeTaskQueue) Push(task scrapeTask) bool {
 	q.mu.Lock()
@@ -29,6 +34,7 @@ func (q *scrapeTaskQueue) Push(task scrapeTask) bool {
 	}
 	q.pending[task.itemID] = struct{}{}
 	q.tasks = append(q.tasks, task)
+	q.waiting.Add(1)
 	q.ready.Signal()
 	return true
 }
@@ -42,6 +48,7 @@ func (q *scrapeTaskQueue) Pop() scrapeTask {
 	task := q.tasks[q.head]
 	q.tasks[q.head] = scrapeTask{}
 	q.head++
+	q.waiting.Add(-1)
 	if q.head == len(q.tasks) {
 		q.tasks = nil
 		q.head = 0
@@ -68,5 +75,6 @@ func (q *scrapeTaskQueue) Drain() int {
 	}
 	q.tasks = nil
 	q.head = 0
+	q.waiting.Add(int64(-n))
 	return n
 }

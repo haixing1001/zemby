@@ -10,8 +10,8 @@
             <div v-else class="placeholder">{{ initial(it) }}</div>
             <div class="progress-bar"><div :style="{ width: progressPct(it) + '%' }"></div></div>
           </div>
-          <div class="title">{{ it.Name }}</div>
-          <div class="meta">{{ it.Type === 'Episode' ? it.SeriesName : it.ProductionYear }}</div>
+          <div class="title">{{ it.Type === 'Episode' ? (it.SeriesName || it.Name) : it.Name }}</div>
+          <div class="meta">{{ it.Type === 'Episode' ? episodeLabel(it) : it.ProductionYear }}</div>
         </div>
       </div>
     </div>
@@ -79,6 +79,15 @@ function open(it) {
 }
 function play(it) {
   router.push('/play/' + (it.RouteId || it.Id))
+}
+// 继续观看的剧集卡：副行显示「第 N 季第 M 集 · 集名」
+function episodeLabel(it) {
+  const s = Number(it.ParentIndexNumber) || 0
+  const e = Number(it.IndexNumber) || 0
+  const parts = []
+  if (s > 0 && e > 0) parts.push(`S${s}E${e}`)
+  if (it.Name && it.Name !== it.SeriesName) parts.push(it.Name)
+  return parts.join(' · ') || ''
 }
 function viewKind(v) {
   if (v.CollectionType === 'favorites') return '收藏'
