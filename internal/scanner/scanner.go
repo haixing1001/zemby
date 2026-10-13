@@ -724,8 +724,8 @@ func (s *Scanner) needsProbe(item *models.Item) bool {
         if err := db.DB.Where("item_id = ?", item.ID).First(&src).Error; err != nil {
                 return false
         }
-        if strings.HasPrefix(src.Path, "http://") || strings.HasPrefix(src.Path, "https://") {
-                return false // 远程流不探测
+        if probe.IsRemoteSource(src.Path) && !LoadProbeConfig().ProbeRemote {
+                return false // 远程流探测关闭（.strm 直链）
         }
 	if src.ProbedMtime != item.Mtime || src.ProbedSize != item.Size {
 		return true

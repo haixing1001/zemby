@@ -77,6 +77,54 @@ func TestScrapeFailedCountExcludesDuplicates(t *testing.T) {
 	}
 }
 
+// TestNeedsProbeRemoteSwitch 远程流探测开关：开启时 strm 直链参与探测，
+// 关闭时跳过。
+func TestNeedsProbeRemoteSwitch(t *testing.T) {
+	d := setupDedupeDB(t)
+	orig := hasFFprobe
+	hasFFprobe = true
+	defer func() { hasFFprobe = orig }()
+
+	SaveProbeConfig(ProbeConfig{ProbeRemote: true, Concurrency: 2, SaveDir: t.TempDir()})
+	mk := func(id, srcPath string) models.Item {
+		it := models.Item{ID: id, LibraryID: "lib1", Type: "Movie", Name: id,
+			Path: "/m/" + id + ".strm", Mtime: 100, Size: 10,
+			DateCreated: time.Now(), UpdatedAt: time.Now()}
+		if err := d.Create(&it).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := d.Create(&models.MediaSource{ID: "src-" + id, ItemID: id, Path: srcPath, Default: true}).Error; err != nil {
+			t.Fatal(err)
+		}
+		return it
+	}
+
+	remote := mk("r1", "https://cdn.example.com/r1.mp4")
+	s := &Scanner{}
+	if !s.needsProbe(&remote) {
+		t.Fatal("开启远程探测时 strm 直链应需要探测")
+	}
+
+	SaveProbeConfig(ProbeConfig{ProbeRemote: false, Concurrency: 2, SaveDir: t.TempDir()})
+	if s.needsProbe(&remote) {
+		t.Fatal("关闭远程探测时 strm 直链应跳过")
+	}
+
+	// 本地文件不受开关影响
+	SaveProbeConfig(ProbeConfig{ProbeRemote: false, Concurrency: 2, SaveDir: t.TempDir()})
+	local := models.Item{ID: "l1", LibraryID: "lib1", Type: "Movie", Name: "l1",
+		Path: "/m/l1.mkv", Mtime: 100, Size: 10, DateCreated: time.Now(), UpdatedAt: time.Now()}
+	if err := d.Create(&local).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Create(&models.MediaSource{ID: "src-l1", ItemID: "l1", Path: "/m/l1.mkv", Default: true}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !s.needsProbe(&local) {
+		t.Fatal("本地文件的探测不受远程开关影响")
+	}
+}
+
 // TestFanrenXiuxianzhuanIngestion 复现用户场景：剧集库
 // 「我的视频/剧集/凡人修仙传 (2020)/Season 1/」下 6 个
 // S01E001-S01E006 的 .strm 文件，验证剧集/季/集是否正常入库。

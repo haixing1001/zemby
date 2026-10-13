@@ -17,6 +17,10 @@
           <div><div class="t">持久化媒体信息</div><div class="d">媒体移除后仍保留信息，重新入库可直接复用</div></div>
           <label class="switch"><input type="checkbox" v-model="cfg.persist" @change="save" /><span class="track"></span><span class="knob"></span></label>
         </div>
+        <div class="set-row">
+          <div><div class="t">探测远程流（strm 直链）</div><div class="d">对 .strm 指向的 http(s) 地址调用 ffprobe 提取编码/分辨率/音轨等；需要网络访问直链，建议配合较低并发</div></div>
+          <label class="switch"><input type="checkbox" v-model="cfg.probeRemote" @change="save" /><span class="track"></span><span class="knob"></span></label>
+        </div>
         <div class="set-row" style="flex-direction:column;align-items:stretch;">
           <div><div class="t">保存目录</div><div class="d">用于媒体信息、TMDB 元数据与图片；TMDB 内容按 TMDB ID 建目录，已有文件不自动迁移</div></div>
           <div style="display:flex;gap:10px;margin-top:10px;">
@@ -74,7 +78,7 @@ import { api } from '../../api/client'
 import { toast, errText } from './util'
 import TaskLogView from './TaskLogView.vue'
 
-const cfg = ref({ onBrowse: true, preloadNext: true, persist: false, saveDir: '', concurrency: 2 })
+const cfg = ref({ onBrowse: true, preloadNext: true, persist: false, probeRemote: true, saveDir: '', concurrency: 2 })
 const ps = ref({})
 const showLog = ref(true)
 let timer = null
@@ -92,7 +96,8 @@ async function save() {
   try {
     await api.admin.saveProbeConfig({
       OnBrowse: cfg.value.onBrowse, PreloadNext: cfg.value.preloadNext,
-      Persist: cfg.value.persist, SaveDir: cfg.value.saveDir,
+      Persist: cfg.value.persist, ProbeRemote: cfg.value.probeRemote,
+      SaveDir: cfg.value.saveDir,
       Concurrency: Number(cfg.value.concurrency) || 2
     })
     toast('提取设置已保存')

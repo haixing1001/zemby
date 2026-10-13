@@ -91,11 +91,29 @@ type Format struct {
 
 // HasFFprobe 检测 ffprobe 是否可用。
 func HasFFprobe() bool {
-        p, err := exec.LookPath("ffprobe")
-        return err == nil && p != ""
+	p, err := exec.LookPath("ffprobe")
+	return err == nil && p != ""
 }
 
-// Probe 提取媒体信息。
+// IsRemoteSource 是否为 http(s) 远程流（.strm 直链）。
+func IsRemoteSource(path string) bool {
+	return strings.HasPrefix(path, "http://") || strings.HasPrefix(path, "https://")
+}
+
+// probeUserAgent 远程探测使用的 UA：网盘直链常拒绝 ffprobe 默认 UA（Lavf）。
+const probeUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+
+// probeArgs 构造 ffprobe 参数。http(s) 直链附加网络读写超时（30 秒，微秒单位）
+// 与浏览器 UA：慢速/防盗链的网盘链接不至于让探测挂死，外层仍有整体超时兜底。
+func probeArgs(path string) []string {
+	args := []string{"-v", "error", "-print_format", "json", "-show_format", "-show_streams"}
+	if IsRemoteSource(path) {
+		args = append(args, "-rw_timeout", "30000000", "-user_agent", probeUserAgent)
+	}
+	return append(args, path)
+}
+
+// Probe 提取媒体信息（支持本地文件与 http(s) 直链）。
 func Probe(ctx context.Context, path string) (*Result, error) {
         bin, err := exec.LookPath("ffprobe")
         if err != nil {
@@ -103,7 +121,7 @@ func Probe(ctx context.Context, path string) (*Result, error) {
         }
         cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
         defer cancel()
-        args := []string{"-v", "error", "-print_format", "json", "-show_format", "-show_streams", path}
+        args := probeArgs(path)
         out, err := exec.CommandContext(cctx, bin, args...).Output()
         if err != nil {
                 if cctx.Err() == context.DeadlineExceeded {

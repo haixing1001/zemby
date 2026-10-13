@@ -53,7 +53,12 @@ func (s *Scanner) doProbe(t probeTask) {
                 size = v
         }
         container := firstFormat(r.Format.FormatName)
-        updates := map[string]any{"run_time_ticks": rt, "size": size, "container": container}
+        updates := map[string]any{"run_time_ticks": rt, "container": container}
+        if !probe.IsRemoteSource(t.path) {
+                // 远程直链的 Content-Length 不可靠且会破坏增量扫描的
+                // strm 文件大小指纹，不写回条目
+                updates["size"] = size
+        }
 	if err := db.DB.Transaction(func(tx *gorm.DB) error {
 		// 原子替换内嵌流；失败时保留旧流信息和旧探测指纹，后续扫描可以重试。
 		if err := tx.Where("item_id = ? AND is_external = ?", t.itemID, false).Delete(&models.MediaStream{}).Error; err != nil {

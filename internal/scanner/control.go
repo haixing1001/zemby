@@ -62,6 +62,7 @@ type ProbeConfig struct {
         OnBrowse    bool   `json:"onBrowse"`
         PreloadNext bool   `json:"preloadNext"`
         Persist     bool   `json:"persist"`
+        ProbeRemote bool   `json:"probeRemote"` // 探测远程流（.strm 直链）的媒体信息
         SaveDir     string `json:"saveDir"`
         Concurrency int    `json:"concurrency"`
 }
@@ -72,9 +73,9 @@ var dataDirValue string
 
 func appDataDir() string { return dataDirValue }
 
-// LoadProbeConfig 读取探测配置（默认：浏览提取+预加载开启，并发 2）。
+// LoadProbeConfig 读取探测配置（默认：浏览提取+预加载+远程流探测开启，并发 2）。
 func LoadProbeConfig() ProbeConfig {
-        c := ProbeConfig{OnBrowse: true, PreloadNext: true, Persist: false, SaveDir: "", Concurrency: 2}
+        c := ProbeConfig{OnBrowse: true, PreloadNext: true, Persist: false, ProbeRemote: true, SaveDir: "", Concurrency: 2}
         kvGet("probe_config", &c)
         if c.Concurrency < 1 {
                 c.Concurrency = 1
