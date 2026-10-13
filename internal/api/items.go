@@ -302,12 +302,13 @@ func (a *App) queryItems(q *itemQuery) ([]models.Item, int) {
                 a.db.Model(&models.UserDatum{}).Where("user_id = ? AND favorite = ?", q.UserID, true).Select("item_id").Scan(&ids)
                 dbq = dbq.Where("id IN ?", orEmpty(ids))
         }
-        // Resume 模式
+        // Resume 模式：只展示电影。剧集的集不逐集出现（继续看剧走剧集详情页），
+        // 避免同一部剧的多集进度把继续观看刷屏。
         if q.Resume {
                 var ids []string
                 a.db.Model(&models.UserDatum{}).Where("user_id = ? AND position_ticks > 0 AND played = ?", q.UserID, false).Select("item_id").Scan(&ids)
                 dbq = dbq.Where("id IN ?", orEmpty(ids))
-                dbq = dbq.Where("type IN ?", []string{"Movie", "Episode"})
+                dbq = dbq.Where("type = ?", "Movie")
         }
 
         // 计数
