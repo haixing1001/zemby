@@ -289,7 +289,7 @@ func (s *Scanner) applySubtitles(item *models.Item, src models.MediaSource, vide
         db.DB.Where("item_id = ? AND is_external = ?", item.ID, true).Delete(&models.MediaStream{})
         subs := MatchSubs(videoPath)
         var maxIdx int
-        db.DB.Model(&models.MediaStream{}).Where("item_id = ?", item.ID).Select("COALESCE(MAX(index),-1)").Scan(&maxIdx)
+        db.DB.Model(&models.MediaStream{}).Where("item_id = ?", item.ID).Select("COALESCE(MAX(`index`),-1)").Scan(&maxIdx)
         for i, sub := range subs {
                 st := models.MediaStream{
                         SourceID: src.ID, ItemID: item.ID, Index: maxIdx + 1 + i,
