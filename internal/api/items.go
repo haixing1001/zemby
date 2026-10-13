@@ -685,7 +685,7 @@ func (a *App) itemSimilar(w http.ResponseWriter, r *http.Request, id string) {
 		limit = 24
 	}
 	var items []models.Item
-	dbq := a.db.Select("id, library_id, type, name, sort_name, year, genres, community_rating, poster, image_rev, date_created").
+	dbq := a.db.Select("id, library_id, type, name, sort_name, year, genres, community_rating, poster, image_rev, people, date_created").
 		Where("type = ? AND id <> ? AND duplicate_of = ''", it.Type, it.ID).
 		Order("community_rating DESC").Limit(500)
         if it.LibraryID != "" {
@@ -697,14 +697,26 @@ func (a *App) itemSimilar(w http.ResponseWriter, r *http.Request, id string) {
 	for _, genre := range strSlice(it.Genres) {
 		baseGenres[genre] = struct{}{}
 	}
+	// 推荐影片按演员相关度：与当前条目共演最多的排最前，
+	// 共演数相同时回退 类型重叠 + 年份接近 + 评分。
+	baseCast := castNameSet(it.People)
 	type rankedItem struct {
-		item  models.Item
-		score float64
-		yearGap int
+		item     models.Item
+		shared   int
+		score    float64
+		yearGap  int
 	}
 	ranked := make([]rankedItem, 0, len(items))
 	for i := range items {
 		candidate := items[i]
+		shared := 0
+		if len(baseCast) > 0 {
+			for name := range castNameSet(candidate.People) {
+				if _, ok := baseCast[name]; ok {
+					shared++
+				}
+			}
+		}
 		sharedGenres := 0
 		for _, genre := range strSlice(candidate.Genres) {
 			if _, ok := baseGenres[genre]; ok {
@@ -725,11 +737,15 @@ func (a *App) itemSimilar(w http.ResponseWriter, r *http.Request, id string) {
 		}
 		ranked = append(ranked, rankedItem{
 			item: candidate,
+			shared: shared,
 			score: float64(sharedGenres*100) + yearScore + candidate.CommunityRating*0.1,
 			yearGap: yearGap,
 		})
 	}
 	sort.SliceStable(ranked, func(i, j int) bool {
+		if ranked[i].shared != ranked[j].shared {
+			return ranked[i].shared > ranked[j].shared
+		}
 		if ranked[i].score != ranked[j].score {
 			return ranked[i].score > ranked[j].score
 		}
@@ -750,6 +766,40 @@ func (a *App) itemSimilar(w http.ResponseWriter, r *http.Request, id string) {
 	}
         out := a.itemDTOs(items, false, "")
         a.json(w, 200, M{"Items": out, "TotalRecordCount": len(out), "StartIndex": 0})
+}
+
+// castNameSet 条目演员姓名集合（排除导演，小写归一化），供推荐影片按共演度排序。
+// 兼容两种存储格式：[{"Name":...}] 与旧版 ["{...}"]。
+func castNameSet(raw string) map[string]struct{} {
+	out := map[string]struct{}{}
+	if strings.TrimSpace(raw) == "" {
+		return out
+	}
+	var objs []map[string]string
+	if json.Unmarshal([]byte(raw), &objs) != nil {
+		var strArr []string
+		if json.Unmarshal([]byte(raw), &strArr) != nil {
+			return out
+		}
+		for _, s := range strArr {
+			var m map[string]string
+			if json.Unmarshal([]byte(s), &m) == nil {
+				objs = append(objs, m)
+			}
+		}
+	}
+	for _, p := range objs {
+		role := strings.ToLower(strings.TrimSpace(p["Role"]))
+		typ := strings.ToLower(strings.TrimSpace(p["Type"]))
+		if role == "director" || role == "导演" || typ == "director" {
+			continue
+		}
+		name := strings.ToLower(strings.TrimSpace(p["Name"]))
+		if name != "" {
+			out[name] = struct{}{}
+		}
+	}
+	return out
 }
 
 // showSeasons 剧集季列表。

@@ -27,7 +27,7 @@ import { api, state } from '../api/client'
 
 const route = useRoute()
 const router = useRouter()
-const id = route.params.id
+const routeId = route.params.id // 路由身份（movie-45871 或内部 ID）
 const videoEl = ref(null)
 const item = ref(null)
 const err = ref('')
@@ -57,6 +57,7 @@ function tapPlay() {
   }
 }
 
+let id = '' // 内部 ID：播放/进度上报等 API 只认它，路由身份仅用于页面 URL
 let srcId = ''
 let container = 'mp4'
 let runTimeTicks = 0
@@ -119,7 +120,9 @@ async function onEnded() {
 
 onMounted(async () => {
   try {
-    item.value = await api.item(id)
+    item.value = await api.item(routeId)
+    // 路由身份（/play/movie-45871）解析出的内部 ID，供播放 API 使用
+    id = String(item.value.Id || routeId)
     const pb = await api.playbackInfo(id)
     if (!pb.MediaSources?.length) {
       err.value = '无可用媒体源'

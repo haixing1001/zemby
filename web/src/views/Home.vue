@@ -78,7 +78,7 @@ function open(it) {
   router.push('/item/' + (it.RouteId || it.Id))
 }
 function play(it) {
-  router.push('/play/' + it.Id)
+  router.push('/play/' + (it.RouteId || it.Id))
 }
 function viewKind(v) {
   if (v.CollectionType === 'favorites') return '收藏'

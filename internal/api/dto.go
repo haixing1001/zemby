@@ -551,13 +551,14 @@ func (a *App) sourceDTOWithStreams(it *models.Item, s *models.MediaSource, detai
                 "Protocol": "File", "Type": "Default",
                 "IsDefault": isDefault, "IsRemote": false,
                 "SupportsDirectPlay":    true,
-                "SupportsDirectStream":  true,
+                "SupportsDirectStream": true,
                 "SupportsTranscoding":   false,
                 "RequiresOpening":       false,
                 "RequiresClosing":       false,
                 "RequiresLooping":       false,
                 "SupportsProbing":       true,
                 "AddApiKeyToDirectStreamUrl": false,
+                "Path": s.Path,
         }
         if s.Container != "" {
                 ms["Container"] = s.Container

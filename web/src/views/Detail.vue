@@ -30,6 +30,10 @@
           </select>
           <span class="muted">共 {{ playbackSources.length }} 个版本</span>
         </div>
+        <div v-if="selectedSourcePath" class="path-line muted" :title="selectedSourcePath">
+          <span class="path-icon">📁</span>
+          <span class="path-text">{{ selectedSourcePath }}</span>
+        </div>
         <div class="toolbar mt">
           <button v-if="item.Type === 'Movie'" class="btn green" @click="play()">▶ 播放</button>
           <button v-if="resumePct > 0 && item.Type === 'Movie'" class="btn ghost" @click="play(true)">
@@ -56,9 +60,9 @@
       </div>
     </div>
 
-    <!-- 相关影片 -->
+    <!-- 推荐影片（按演员相关度） -->
     <div v-if="relatedItems.length" class="section">
-      <h2>相关影片</h2>
+      <h2>推荐影片</h2>
       <div class="grid">
         <div v-for="related in relatedItems" :key="related.Id" class="poster-card" @click="openRelated(related)">
           <div class="poster">
@@ -109,6 +113,10 @@ const error = ref('')
 const item = ref({})
 const broken = ref(false)
 const selectedSourceId = ref('')
+const selectedSourcePath = computed(() => {
+  const src = playbackSources.value.find(source => String(source.Id) === String(selectedSourceId.value))
+  return src?.Path || playbackSources.value[0]?.Path || ''
+})
 const relatedItems = ref([])
 const brokenRelatedImages = ref(new Set())
 const seasons = ref([])
@@ -170,7 +178,8 @@ function fmtRuntime(ticks) {
 }
 
 function play() {
-  router.push({ path: '/play/' + internalId.value, query: { source: selectedSourceId.value || undefined } })
+  // 播放 URL 使用稳定路由身份（如 /play/movie-45871?source=），内部 ID 仅供 API 调用
+  router.push({ path: '/play/' + (item.value.RouteId || internalId.value), query: { source: selectedSourceId.value || undefined } })
 }
 async function playEpisode(ep) {
   router.push('/play/' + ep.Id)
@@ -272,6 +281,8 @@ watch(() => route.params.id, value => loadItem(String(value || '')), { immediate
 
 <style scoped>
 .version-picker { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+.path-line { display: flex; align-items: flex-start; gap: 6px; margin-top: 10px; font-size: 12px; word-break: break-all; }
+.path-line .path-text { max-width: 100%; overflow-wrap: anywhere; user-select: all; }
 .version-picker label { width: auto; margin: 0; color: var(--text-dim); font-size: 13px; }
 .version-picker select { width: min(100%, 480px); min-width: 220px; }
 @media (max-width: 760px) {
