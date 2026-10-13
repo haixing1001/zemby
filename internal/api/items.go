@@ -715,8 +715,11 @@ func (a *App) itemSimilar(w http.ResponseWriter, r *http.Request, id string) {
 		limit = 24
 	}
 	var items []models.Item
-	dbq := a.db.Select("id, library_id, type, name, sort_name, year, genres, community_rating, poster, image_rev, people, date_created").
-		Where("type = ? AND id <> ? AND duplicate_of = ''", it.Type, it.ID).
+	// 推荐影片只含有 TMDB 身份的条目：未刮削的裸条目没有稳定路由
+	// （/item/movie-45871）也没有海报/简介可看。Select 必须带上
+	// tmdb_id/tmdb_kind，否则 TmdbRouteID 拿不到身份、URL 退回内部 ID。
+	dbq := a.db.Select("id, library_id, type, name, sort_name, year, genres, community_rating, poster, image_rev, people, tmdb_id, tmdb_kind, date_created").
+		Where("type = ? AND id <> ? AND duplicate_of = '' AND tmdb_id <> ''", it.Type, it.ID).
 		Order("community_rating DESC").Limit(500)
         if it.LibraryID != "" {
                 dbq = dbq.Where("library_id = ?", it.LibraryID)
